@@ -269,9 +269,11 @@ class Grid:
         self.pad[count<minCountPresent] = 0
 
 
-    def create_dem_decreasing_window(self, pulses, windowSizes = [5,2.5,1], heightThresholds=[1,.5,.25]):
+    def create_dem_decreasing_window(self, pulses, windowSizes = [5,2.5,1,.5], heightThresholds=[2.5,1.25,.5,.25]):
         import polars as pl
         import scipy
+        from voxelmon.utils import interp2D_w_cubic_extrapolation
+
 
         try:
             points = pulses.xyz
@@ -301,7 +303,8 @@ class Grid:
             pointsValid = np.array((x[~maskMissing], y[~maskMissing])).T
             valuesValid = grid[~maskMissing]
             pointsMissing = np.array((x[maskMissing], y[maskMissing])).T
-            grid[maskMissing] = scipy.interpolate.griddata(pointsValid, valuesValid, pointsMissing, method='linear')
+            #grid[maskMissing] = scipy.interpolate.griddata(pointsValid, valuesValid, pointsMissing, method='linear')
+            grid[maskMissing] = interp2D_w_cubic_extrapolation(pointsValid, valuesValid, pointsMissing)
 
             # Relate elevation data to point cloud
             dem_df = pl.DataFrame({'xBin':(centers[:,0]//self.cellSize).astype(np.int32),
@@ -319,10 +322,79 @@ class Grid:
         pointsValid = np.array((x[~maskMissing], y[~maskMissing])).T
         valuesValid = grid[~maskMissing]
         pointsMissing = np.array((x[maskMissing], y[maskMissing])).T
-        grid[maskMissing] = scipy.interpolate.griddata(pointsValid, valuesValid, pointsMissing, method='linear')
+        #grid[maskMissing] = scipy.interpolate.griddata(pointsValid, valuesValid, pointsMissing, method='linear')
+        grid[maskMissing] = interp2D_w_cubic_extrapolation(pointsValid, valuesValid, pointsMissing)
 
         self.dem = grid
         self.hag = self.centers[:,2] - np.tile(grid.flatten(),self.shape[2])
+
+    def calculate_dem_metrics(self):
+        import statsmodels.api as sm
+        import pandas as pd
+        results = {}
+
+        dem_df = pd.DataFrame({'x':self.centersXY[:,0],'y':self.centersXY[:,1],'z':self.dem.flatten()})
+
+        # Calculate horizontal distance from center
+        dem_df['HD'] = np.sqrt(dem_df['x'] ** 2 + dem_df['y'] ** 2)
+        # Filter outside of plot radius
+        dem_df = dem_df[dem_df['HD'] < 11.3]
+        dem_df = dem_df[~np.isnan(dem_df['z'])]
+        dem_df['intercept'] = 1
+
+        # Fit a plane using linear regression
+        model = sm.OLS(dem_df['z'],dem_df[['intercept','x', 'y']]).fit()
+
+        # Extract coefficients
+        intercept = model.params.iloc[0]
+        coef_x = model.params.iloc[1]
+        coef_y = model.params.iloc[2]
+
+        # Normal vector of the plane
+        normal_vector = np.array([coef_x, coef_y, -1])
+
+        # Normalize the normal vector to get a unit vector
+        normal_unit_vector = normal_vector / np.linalg.norm(normal_vector)
+        if normal_unit_vector[2] < 0:
+            normal_unit_vector *= -1
+
+        # Unit vector along the Z-axis (to get terrain slope relative to up)
+        z_axis_vector = np.array([0, 0, 1])
+
+        # Unit vector along Y-axis (to get terrain aspect relative to north)
+        y_axis_vector = np.array([0, 1, 0])
+
+        # Calculate the dot product between the unit vectors
+        dot_product_z = np.dot(normal_unit_vector, z_axis_vector)
+
+        # Assign angles to data
+        results['terrain_slope'] = np.degrees(np.arccos(dot_product_z))
+        terrain_aspect = np.degrees(np.arctan2(normal_unit_vector[0], normal_unit_vector[1]))
+        if terrain_aspect < 0:
+            terrain_aspect += 360
+        results['terrain_aspect'] = terrain_aspect
+
+        # Calculate terrain shape metrics
+        dem_df['resid'] = dem_df['z'] - model.predict(dem_df[['intercept', 'x', 'y']])
+        hd_half = 11.3 / 2
+        sum_inner = dem_df[dem_df['HD'] < hd_half]['resid'].sum()
+        sum_outer = dem_df[dem_df['HD'] >= hd_half]['resid'].sum()
+        results['terrain_concavity'] = sum_inner - sum_outer
+        results['terrain_roughness'] = np.sqrt(np.mean(dem_df['resid'] ** 2))
+        return results
+
+    def calculate_canopy_cover(self,clip_radius = 11.3,cutoff_height=2,min_pad = .05,max_occlusion=.8):
+        import polars as pl
+        df = self.to_polars().select(['x','y','hag','pad','occlusion'])
+        df = df.filter(pl.col('hag').ge(cutoff_height))
+        if clip_radius is not None:
+            df = df.filter(((pl.col('x')**2 + pl.col('y')**2)**.5).le(clip_radius))
+        df = df.group_by((pl.col('x')/self.cellSize).cast(int), (pl.col('y')/self.cellSize).cast(int)) \
+               .agg([(pl.col("pad") >= 0.05).sum().alias('filled'),
+                     pl.col("occlusion").mean().alias("occlusion")])
+        total_cells = df.filter(pl.col('filled').gt(0) | pl.col('occlusion').le(max_occlusion)).shape[0]
+        filled_cells = df.filter(pl.col('filled').gt(0)).shape[0]
+        return filled_cells / total_cells
 
     def classify_foliage_with_PAD(self,maxOcclusion=.75,minPADFoliage=.05,maxPADFoliage=6):
         self.classification[:,:,:] = -2
@@ -729,108 +801,220 @@ class PtxBlk360G1:
         keep = self.ptrh[:, 0] < 3.1
         self.filter(keep)
 
+    def execute_default_processing(self, export_folder, plot_name, cell_size=.1, plot_radius=11.3, plot_radius_buffer=.7, max_height=99, max_occlusion=.8, sigma1=0, min_pad_foliage=.01, max_pad_foliage=6):
+        import os
+        from voxelmon.utils import _default_postprocessing,_default_folder_setup
 
-class FoliageProfileModel:
+        _default_folder_setup(export_folder)
+
+
+        pulses = Pulses.from_point_cloud_array(self.xyz, self.origin)
+
+        maxExtents = [-plot_radius - plot_radius_buffer, -plot_radius - plot_radius_buffer, -plot_radius, plot_radius + plot_radius_buffer, plot_radius + plot_radius_buffer, max_height]
+
+        pulses_thin = pulses.crop(maxExtents)
+        minHeight = pulses_thin.xyz[:, 2].min()
+        max_height = pulses_thin.xyz[:, 2].max() + 1
+        gridExtents = maxExtents.copy()
+        gridExtents[2] = minHeight
+        gridExtents[5] = max_height
+
+        # pulses_thin = pulses_thin.thin_distance_weighted_random(.25)
+        grid = Grid(extents=gridExtents, cellSize=cell_size)
+
+        grid.create_dem_decreasing_window(pulses_thin)
+
+        grid.calculate_pulse_metrics(pulses)
+
+        pulses_thin.to_csv(os.path.join(export_folder, 'Points/', plot_name) + '.csv')
+
+        profile, summary = _default_postprocessing(grid=grid, plot_name=plot_name, export_folder=export_folder, plot_radius=plot_radius, max_occlusion=max_occlusion, sigma1=sigma1, min_pad_foliage=min_pad_foliage, max_pad_foliage=max_pad_foliage)
+
+        return profile, summary
+
+class PtxBlk360G1_Group:
+    def __init__(self,filepathList):
+        ptxGroup = [PtxBlk360G1(filepathList[0], applyTranslation=False, applyRotation=True, dropNull=False)]
+        offset = -ptxGroup[0].originOriginal
+        for ptxFile in filepathList[1:]:
+            ptx = PtxBlk360G1(ptxFile, applyTranslation=True, applyRotation=True, dropNull=False, offset=offset)
+            ptxGroup.append(ptx)
+
+        self.ptxGroup = ptxGroup
+
+    def execute_default_processing(self, export_folder, plot_name, cell_size=.1, plot_radius=11.3, plot_radius_buffer=.7, max_height=99, max_occlusion=.8, sigma1=.1, min_pad_foliage=.01, max_pad_foliage=6):
+        import os
+        from voxelmon.utils import _default_folder_setup, _default_postprocessing
+
+        _default_folder_setup(export_folder)
+
+        maxExtents = [-plot_radius - plot_radius_buffer, -plot_radius - plot_radius_buffer, -plot_radius, plot_radius + plot_radius_buffer, plot_radius + plot_radius_buffer, max_height]
+
+        pulsesList = []
+        pulsesThinAll = []
+        for ptx in self.ptxGroup:
+            pulses = Pulses.from_point_cloud_array(ptx.xyz,ptx.origin)
+            pulses_thin = pulses.crop(maxExtents).xyz
+            pulsesThinAll.append(pulses_thin)
+            pulsesList.append(pulses)
+        pulsesThinAll = np.concatenate(pulsesThinAll)
+
+        minHeight = pulsesThinAll[:,2].min()
+        max_height = pulsesThinAll[:, 2].max() + 1
+        extents = maxExtents.copy()
+        extents[2] = minHeight
+        extents[5] = max_height
+
+        grid = Grid(extents=extents, cellSize=cell_size)
+
+        grid.create_dem_decreasing_window(pulsesThinAll)
+
+        grid.calculate_pulse_metrics(pulsesList[0])
+
+        if len(pulsesList)>1:
+            for pulses in pulsesList[1:]:
+                grid_temp = Grid(extents=extents, cellSize=cell_size)
+                grid_temp.calculate_pulse_metrics(pulses)
+                grid.add_pulse_metrics(grid_temp)
+
+        #pulses_thin.to_csv(os.path.join(export_folder, 'Points/', plot_name) + '.csv')
+
+        profile, summary = _default_postprocessing(grid=grid, plot_name=plot_name, export_folder=export_folder, plot_radius=plot_radius, max_occlusion=max_occlusion, sigma1=sigma1, min_pad_foliage=min_pad_foliage, max_pad_foliage=max_pad_foliage)
+
+        return profile, summary
+
+
+class CanopyBulkDensityModel:
     def __init__(self):
         pass
 
-    def fit(self, lidarProfile, biomassProfile, biomassCols, cellSize, sigma, lidarValueCol,fitIntercept=False,twoStageFit=False, plotIdCol='Plot_ID', heightCol='height', classIdCol='CLASS'):
+    @classmethod
+    def from_file(cls, filepath):
+        import pickle
+        with open(filepath, 'rb') as f:
+            obj = pickle.load(f)
+        return obj
+
+    @classmethod
+    def fit(cls, profileData, lidarValueCol, biomassCols, classIdCol='class', plotIdCol='Plot_ID', heightCol='height', sigma=1.2, minHeight=1, fitIntercept=False,twoStageFit=False):
+        model = CanopyBulkDensityModel().fit(profileData=profileData, lidarValueCol=lidarValueCol, biomassCols=biomassCols,
+                                             sigma=sigma, minHeight=minHeight, fitIntercept=fitIntercept,
+                                             twoStageFit=twoStageFit, plotIdCol=plotIdCol, heightCol=heightCol, classIdCol=classIdCol)
+        return model
+
+    def fit(self, profileData, lidarValueCol, biomassCols, classIdCol='class', plotIdCol='Plot_ID', heightCol='height', sigma=1.2, minHeight=1, fitIntercept=False,twoStageFit=False):
         import statsmodels.formula.api as smf
-        from patsy.contrasts import Sum
+        from voxelmon import smooth
+        import pandas as pd
 
-        from patsy.contrasts import ContrastMatrix
-
-        def _name_levels(prefix, levels):
-            return ["[%s%s]" % (prefix, level) for level in levels]
-
-        class Simple(object):
-            def _simple_contrast(self, levels):
-                nlevels = len(levels)
-                contr = -1.0 / nlevels * np.ones((nlevels, nlevels - 1))
-                contr[1:][np.diag_indices(nlevels - 1)] = (nlevels - 1.0) / nlevels
-                return contr
-
-            def code_with_intercept(self, levels):
-                contrast = np.column_stack(
-                    (np.ones(len(levels)), self._simple_contrast(levels))
-                )
-                return ContrastMatrix(contrast, _name_levels("Simp.", levels))
-
-            def code_without_intercept(self, levels):
-                contrast = self._simple_contrast(levels)
-                return ContrastMatrix(contrast, _name_levels("Simp.", levels[:-1]))
-
-
-        self.heightCol = heightCol
-        self.cellSize = cellSize
+        self.height_col = heightCol
         self.sigma = sigma
         self.feature = lidarValueCol
 
-        weights = biomassProfile.join(biomassProfile[plotIdCol].value_counts(),on=plotIdCol)['count']
-        weights = weights / weights.sum()
+        profiles_list = []
+
+        for plot in profileData[plotIdCol].unique():
+            profileDataFilter = profileData[(profileData[plotIdCol] == plot)].copy()
+            for col in biomassCols:
+                profileDataFilter[col] = smooth(profileDataFilter[col], sigma=sigma)
+            profileDataFilter['CBD_TOTAL'] = profileData[biomassCols].sum(axis=1)
+            profileDataFilter[lidarValueCol] = smooth(profileDataFilter[lidarValueCol], sigma=sigma)
+            profiles_list.append(profileDataFilter)
+
+        profileData = pd.concat(profiles_list)
+        profileData = profileData[profileData[heightCol]>=minHeight]
+
 
         # Use linear modelling to get feature:biomass coefficient for each species
         if fitIntercept:
             lm = smf.mixedlm(formula=lidarValueCol + '~' + '+'.join(biomassCols),
-                             data=biomassProfile, groups=biomassProfile[plotIdCol],
-                             re_formula="0+TOTAL").fit()
-            #lm = smf.wls(lidarValueCol + '~' + '+'.join(biomassCols), biomassProfile, weights=1.0).fit()
+                             data=profileData, groups=profileData[plotIdCol],
+                             re_formula="0+CBD_TOTAL").fit()
             coef = lm.params.copy()
             self.intercept = coef.iloc[0]
             coef[coef == 0] = -1
             coef = 1 / coef
             coef[coef <= 0] = 0
-            self.bulkDensity = coef.iloc[1:len(biomassCols)+1].to_dict()
+            self.mass_ratio = coef.iloc[1:len(biomassCols) + 1].to_dict()
         else:
             lm = smf.mixedlm(formula= lidarValueCol + '~' + '+'.join(biomassCols)+'-1',
-                             data = biomassProfile, groups = biomassProfile[plotIdCol],
-                             re_formula="~0+TOTAL").fit()
-            #lm = smf.wls(lidarValueCol + '~' + '+'.join(biomassCols)+f"+ TOTAL:C({plotIdCol},Simple) -1",biomassProfile,weights=weights).fit()
-            #lm = smf.wls(lidarValueCol + '~' + '+'.join(biomassCols) + "-1",biomassProfile, weights=weights).fit()
+                             data = profileData, groups = profileData[plotIdCol],
+                             re_formula="~0+CBD_TOTAL").fit()
 
             coef = lm.params.copy()
-            #coef += coef.iloc[len(biomassCols)] # Mean effect of total
             coef[coef==0]=-1
             coef = 1 / coef
             coef[coef<=0] = 0
-            self.bulkDensity = coef.iloc[:len(biomassCols)].to_dict()
+            self.mass_ratio = coef.iloc[:len(biomassCols)].to_dict()
             self.intercept = 0
 
 
         # Get species distribution profile for each class
-        speciesDist = biomassProfile[[classIdCol,heightCol]+biomassCols].groupby([classIdCol,heightCol]).sum()
+        speciesDist = profileData[[classIdCol,heightCol]+biomassCols].groupby([classIdCol,heightCol]).sum()
         speciesDistSum = speciesDist.sum(axis=1)
         for col in speciesDist.columns:
             speciesDist[col]=speciesDist[col] / speciesDistSum
 
-        self.speciesProfiles = {}
-        for classId in biomassProfile[classIdCol].unique():
-            self.speciesProfiles[classId] = speciesDist.loc[classId,:].reset_index().ffill()
+        self.species_profiles = {}
+        for classId in profileData[classIdCol].unique():
+            self.species_profiles[classId] = speciesDist.loc[classId, :].reset_index().ffill()
 
         if twoStageFit:
             # Correct for biased predictions
-            predicted = self.predict(lidarProfile=lidarProfile,lidarValueCol=lidarValueCol,heightCol=heightCol,classIdCol=classIdCol,resultCol='biomassPred')
-            predicted_plot = predicted.pivot_table(values=['TOTAL','biomassPred'],index=plotIdCol,aggfunc='sum')
-            lm2 = smf.ols('TOTAL~biomassPred-1',predicted_plot).fit()
+            predicted = self.predict(lidarProfile=profileData,lidarValueCol=lidarValueCol,heightCol=heightCol,classIdCol=classIdCol,resultCol='cbd_pred')
+            predicted_plot = predicted.pivot_table(values=['CBD_TOTAL','cbd_pred'],index=plotIdCol,aggfunc='sum')
+            lm2 = smf.ols('CBD_TOTAL~cbd_pred-1',predicted_plot).fit()
             correction = float(lm2.params.iloc[0])
-            for key in self.bulkDensity.keys():
-                self.bulkDensity[key] *= correction
+            for key in self.mass_ratio.keys():
+                self.mass_ratio[key] *= correction
 
-    def predict(self,lidarProfile,lidarValueCol='pad',heightCol='height',classIdCol='CLASS',resultCol='biomassPred'):
+    def predict(self,lidarProfile,lidarValueCol='pad',heightCol='height',plotIdCol = 'Plot_ID',classIdCol='class',resultCol='cbd_pred'):
         import pandas as pd
+        from voxelmon import smooth
         results = []
-        for classId in lidarProfile[classIdCol].unique():
-            df_filter = lidarProfile[lidarProfile[classIdCol]==classId].copy()
-            df_filter = df_filter.drop(columns=self.bulkDensity.keys(),errors='ignore')
-            df_filter = df_filter.merge(self.speciesProfiles[classId],left_on=heightCol,right_on=self.heightCol,how='left').ffill()
+        for plotId in lidarProfile[plotIdCol].unique():
+            df_filter = lidarProfile[lidarProfile[plotIdCol]==plotId].copy()
+            classId = df_filter[classIdCol].iloc[0]
+            df_filter[lidarValueCol] = smooth(df_filter[lidarValueCol],self.sigma)
+            df_filter = df_filter.drop(columns=self.mass_ratio.keys(), errors='ignore')
+            df_filter = df_filter.merge(self.species_profiles[classId], left_on=heightCol, right_on=self.height_col, how='left').ffill()
             result = pd.Series(np.zeros(df_filter.shape[0],np.float64))
-            for species in self.bulkDensity.keys():
-                result = result + (df_filter[lidarValueCol] - self.intercept) * df_filter[species] * self.bulkDensity[species]
+            for species in self.mass_ratio.keys():
+                result = result + (df_filter[lidarValueCol] - self.intercept) * df_filter[species] * self.mass_ratio[species]
             df_filter[resultCol] = result
             results.append(df_filter)
         results = pd.concat(results)
+        results[resultCol] = results[resultCol].clip(lower=0)
 
         return results
+
+    def predict_and_test(self,lidarProfile,biomassCols,lidarValueCol='pad',heightCol='height',plotIdCol = 'Plot_ID',classIdCol='class',resultCol='cbd_pred'):
+        import pandas as pd
+        from voxelmon import smooth
+        results = []
+        for plotId in lidarProfile[plotIdCol].unique():
+            df_filter = lidarProfile[lidarProfile[plotIdCol]==plotId].copy()
+            classId = df_filter[classIdCol].iloc[0]
+            df_filter[lidarValueCol] = smooth(df_filter[lidarValueCol],self.sigma)
+            df_filter['CBD_TOTAL'] = df_filter[biomassCols].sum(axis=1)
+            df_filter['CBD_TOTAL'] = smooth(df_filter['CBD_TOTAL'], self.sigma)
+            df_filter = df_filter.drop(columns=self.mass_ratio.keys(), errors='ignore')
+            df_filter = df_filter.merge(self.species_profiles[classId], left_on=heightCol, right_on=self.height_col, how='left').ffill()
+            result = pd.Series(np.zeros(df_filter.shape[0],np.float64))
+            for species in self.mass_ratio.keys():
+                result = result + (df_filter[lidarValueCol] - self.intercept) * df_filter[species] * self.mass_ratio[species]
+            df_filter[resultCol] = result
+            results.append(df_filter)
+        results = pd.concat(results)
+        results[resultCol] = results[resultCol].clip(lower=0)
+        results['RESIDUAL'] = results[resultCol] - results['CBD_TOTAL']
+
+        return results
+
+    def to_file(self,filepath):
+        import pickle
+        with open(filepath, 'wb') as f:
+            pickle.dump(self, f)
 
 
 

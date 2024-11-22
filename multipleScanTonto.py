@@ -3,30 +3,30 @@ import time
 import numpy as np
 from pathlib import Path
 import pickle
-from voxelmon import Grid,Pulses,PtxBlk360G1,FoliageProfileModel,get_files_list,plot_side_view
+from voxelmon import PtxBlk360G1_Group,CanopyBulkDensityModel,get_files_list,plot_side_view,smooth
 import statsmodels.formula.api as smf
 import seaborn as sns
 
-cellSize = .1
-gridRadius = 12 # Distance from grid center to edge
-plotRadius = 11.3
-maxGridHeight = 30 # Height of grid above coordinate [0,0,0]
-maxOcclusion = .8
+cell_size = .1
+grid_radius = 12 # Distance from grid center to edge
+plot_radius = 11.3
+max_grid_height = 30 # Height of grid above coordinate [0,0,0]
+max_occlusion = .8
 
-inputFolder = '../TontoNF/TLS/PTX/AllScans/'
+input_folder = '../TontoNF/TLS/PTX/AllScans/'
 keyword = 'Med Density 1'
-exportFolder = 'D:/DataWork/pypadResultsMulti/'
-surfaceBiomass = pd.read_csv('C:\\Users\\john1\\OneDrive - Northern Arizona University\\Work\\TontoNF\\SubplotBiomassEstimates.csv')
+export_folder = 'D:/DataWork/pypadResultsMulti/'
+surface_biomass = pd.read_csv('C:\\Users\\john1\\OneDrive - Northern Arizona University\\Work\\TontoNF\\SubplotBiomassEstimates.csv')
 biomass = pd.read_csv('C:\\Users\\john1\\OneDrive - Northern Arizona University\\Work\\TontoNF\\AZ_CanProf_Output.csv')
-biomassClasses = list(biomass.columns[2:-1])
+biomass_classes = list(biomass.columns[2:-1])
 #biomassClasses = ['PIPO','PINYON','JUNIPER','OAKS','ARPU','OTHER']
 sigma = 1.2
 feature = 'pad'
-process = False
-byVegType = False
-leaveOneOut = True
-generateTestFigure = False
-generateFigures = False
+process = True
+by_veg_type = False
+leave_one_out = True
+generate_test_figure = False
+generate_figures = False
 
 def get_class(plot_name):
     code = int(plot_name[1:3])
@@ -78,109 +78,40 @@ def score(y_obs,y_pred,print_output=True,refit=True):
         print()
     return {'r2':r2,'rmse':rmse,'rrmse':rrmse}
 
-def smooth(values,sigma):
-    from scipy.ndimage import gaussian_filter1d
-    valuesSmooth = gaussian_filter1d(values,sigma=sigma,mode='constant',cval=np.nan)
-    # Fill missing values on with original, non-smoothed values
-    valuesSmooth[np.isnan(valuesSmooth)] = values[np.isnan(valuesSmooth)]
-    return valuesSmooth
 
-baseExtents = [-gridRadius,-gridRadius,-gridRadius,gridRadius,gridRadius,maxGridHeight]
 
-filesScan1 = get_files_list(inputFolder, keyword)
-filesAll = get_files_list(inputFolder,'.ptx')
-filesGrouped = []
-for fileScan1 in filesScan1:
-    plotId = get_plot_id(fileScan1)
-    filesGrouped.append([file for file in filesAll if plotId in file])
+
+files_scan1 = get_files_list(input_folder, keyword)
+files_all = get_files_list(input_folder, '.ptx')
+files_grouped = []
+for fileScan1 in files_scan1:
+    plot_id = get_plot_id(fileScan1)
+    files_grouped.append([file for file in files_all if plot_id in file])
 start_time_all = time.time()
 i=1
 import os
 import warnings
 import matplotlib.pyplot as plt
 warnings.filterwarnings("ignore", category=RuntimeWarning)
-filesGrouped = filesGrouped[6:]
+files_grouped = files_grouped[6:]
 
 if process:
-    if not Path(exportFolder).exists():
-        os.makedirs(exportFolder)
-    if not Path(exportFolder).joinpath('DEM').exists():
-        os.mkdir(Path(exportFolder).joinpath('DEM'))
-    if not Path(exportFolder).joinpath('Points').exists():
-        os.mkdir(Path(exportFolder).joinpath('Points'))
-    if not Path(exportFolder).joinpath('PAD').exists():
-        os.mkdir(Path(exportFolder).joinpath('PAD'))
-    if not Path(exportFolder).joinpath('PAD_Summary').exists():
-        os.mkdir(Path(exportFolder).joinpath('PAD_Summary'))
 
-    for filegroup in filesGrouped:
+
+    for filegroup in files_grouped:
         start_time = time.time()
-        print("Starting file ", i, " of ",len(filesGrouped))
-        baseFileName = get_plot_id(filegroup[0])
+        print("Starting file ", i, " of ", len(files_grouped))
+        base_file_name = get_plot_id(filegroup[0])
 
-        ptxGroup = [PtxBlk360G1(filegroup[0],applyTranslation=False,applyRotation=True,dropNull=False)]
-        offset = -ptxGroup[0].originOriginal
-        for ptxFile in filegroup[1:]:
-            ptx = PtxBlk360G1(ptxFile, applyTranslation=True, applyRotation=True, dropNull=False, offset=offset)
-            ptxGroup.append(ptx)
-
-        pulsesList = []
-        pulsesThinAll = []
-        for ptx in ptxGroup:
-            pulses = Pulses.from_point_cloud_array(ptx.xyz,ptx.origin)
-            pulses_thin = pulses.crop(baseExtents).xyz
-            pulsesThinAll.append(pulses_thin)
-            pulsesList.append(pulses)
-        pulsesThinAll = np.concatenate(pulsesThinAll)
-
-        import polars as pl
-        tmp = pl.DataFrame(pulsesThinAll)
-        tmp.write_csv(os.path.join(exportFolder, 'Points/', baseFileName) + '.csv')
+        profile,plot_summary = PtxBlk360G1_Group(filegroup).execute_default_processing(export_folder=export_folder, plot_name=base_file_name, cell_size=cell_size,
+                                                                              plot_radius=plot_radius, max_height=max_grid_height, max_occlusion=max_occlusion,
+                                                                              sigma1=.1, min_pad_foliage=.01, max_pad_foliage=6)
 
 
-        #z_range = pulsesThinAll[~is_noise_ivf(pulsesThinAll),2]
-        #minHeight = z_range.min()
-        #maxHeight = z_range.max()
-        minHeight = pulsesThinAll[:,2].min()
-        maxHeight = pulsesThinAll[:, 2].max()+1
-        extents = baseExtents.copy()
-        extents[2] = minHeight
-        extents[5] = maxHeight
-
-        #pulsesThinAll = pulsesThinAll.thin_distance_weighted_random(.25)
-        grid = Grid(extents=extents,cellSize=cellSize)
-
-        grid.create_dem_decreasing_window(pulsesThinAll)
-
-        grid.calculate_pulse_metrics(pulsesList[0])
-
-        if len(pulsesList)>1:
-            for pulses in pulsesList[1:]:
-                grid_temp = Grid(extents=extents,cellSize=cellSize)
-                grid_temp.calculate_pulse_metrics(pulses)
-                grid.add_pulse_metrics(grid_temp)
-
-        #grid.calculate_eigenvalues(pulsesThinAll.array[:,3:6])
-
-        grid.filter_pad_noise_ivf()
-        grid.gaussian_filter_PAD(sigma=.1)
-        #threshold = np.quantile(grid.pad[(grid.pad>0) & (grid.occlusion<=maxOcclusion)],.9)
-        threshold = 6
-        grid.classify_foliage_with_PAD(maxOcclusion=maxOcclusion,minPADFoliage=.01,maxPADFoliage=threshold)
-        summary = grid.summarize_by_height(clipRadius=plotRadius)
-
-
-
-        grid.export_grid_as_csv(os.path.join(exportFolder,'PAD/',baseFileName) + '.csv')
-
-        grid.export_dem_as_csv(os.path.join(exportFolder,'DEM/',baseFileName) + '.csv')
-
-        summary.write_csv(os.path.join(exportFolder, 'PAD_Summary/', baseFileName) + '.csv')
-
-        plt.plot(summary['pad'], summary['height'])
+        plt.plot(profile['pad'], profile['height'])
         plt.show()
 
-        print("Finished file ", i, " of ", len(filesGrouped)," in ", round(time.time()-start_time,3)," seconds")
+        print("Finished file ", i, " of ", len(files_grouped), " in ", round(time.time() - start_time, 3), " seconds")
         i += 1
 
     print("Finished all files in ",round(time.time()-start_time_all)," seconds")
@@ -192,15 +123,15 @@ import statsmodels.formula.api as smf
 biomass_list = []
 for plot in biomass['Plot_ID'].unique():
     biomass_filter = biomass[(biomass['Plot_ID']==plot) & (biomass['Height_m']>=1)].copy()
-    for col in biomassClasses:
+    for col in biomass_classes:
         biomass_filter[col] = smooth(biomass_filter[col],sigma=sigma)
     biomass_filter['TOTAL'] = smooth(biomass_filter['TOTAL'],sigma=sigma)
     biomass_list.append(biomass_filter)
 biomass = pd.concat(biomass_list)
 biomass['CLASS'] = [get_class(string) for string in biomass['Plot_ID']]
-biomass['heightBin'] = (biomass['Height_m'] / cellSize).round().astype(int)
+biomass['heightBin'] = (biomass['Height_m'] / cell_size).round().astype(int)
 
-tls_summary_files = get_files_list(exportFolder+'/PAD_Summary','.csv')
+tls_summary_files = get_files_list(export_folder + '/PAD_Summary', '.csv')
 i=0
 for file in tls_summary_files:
     df_tls = pd.read_csv(file)
@@ -221,25 +152,25 @@ outliers = ['T0523061403']
 df_all = df_all[~(df_all['Plot_ID'].isin(outliers))]
 
 ### Surface fuels ###
-surfaceBiomassPlot = surfaceBiomass.pivot_table(index='PLOT_NAME',values=['LOAD_LITTER_DUFF','LOAD_DOWN_WOODY','LOAD_STANDING','LOAD_TOTAL_SURFACE'],aggfunc='mean')
-surfaceBiomassPlot['LOAD_DOWNED'] = surfaceBiomassPlot['LOAD_LITTER_DUFF'] + surfaceBiomassPlot['LOAD_DOWN_WOODY']
-plotCanopy = df_all[df_all['height']>=.1].pivot_table(index='Plot_ID',aggfunc={'CLASS':'first','foliage':'sum','pad':'sum'})
-plotSurface = df_all[(df_all['height']>=.1) & (df_all['height']<1)].pivot_table(index='Plot_ID',values=['foliage','pad'],aggfunc='mean')
-surfaceBiomassPlot = surfaceBiomassPlot.join(plotCanopy)
-surfaceBiomassPlot = surfaceBiomassPlot.join(plotSurface,lsuffix='_canopy',rsuffix='_surface')
-surfaceBiomassPlot = surfaceBiomassPlot.dropna()
+surface_biomass_plot = surface_biomass.pivot_table(index='PLOT_NAME', values=['LOAD_LITTER_DUFF', 'LOAD_DOWN_WOODY', 'LOAD_STANDING', 'LOAD_TOTAL_SURFACE'], aggfunc='mean')
+surface_biomass_plot['LOAD_DOWNED'] = surface_biomass_plot['LOAD_LITTER_DUFF'] + surface_biomass_plot['LOAD_DOWN_WOODY']
+plot_canopy = df_all[df_all['height'] >= .1].pivot_table(index='Plot_ID', aggfunc={'CLASS': 'first', 'foliage': 'sum', 'pad': 'sum'})
+plot_surface = df_all[(df_all['height'] >= .1) & (df_all['height'] < 1)].pivot_table(index='Plot_ID', values=['foliage', 'pad'], aggfunc='mean')
+surface_biomass_plot = surface_biomass_plot.join(plot_canopy)
+surface_biomass_plot = surface_biomass_plot.join(plot_surface, lsuffix='_canopy', rsuffix='_surface')
+surface_biomass_plot = surface_biomass_plot.dropna()
 
-sns.scatterplot(surfaceBiomassPlot,x='pad_canopy',y='LOAD_DOWNED',hue='CLASS')
+sns.scatterplot(surface_biomass_plot, x='pad_canopy', y='LOAD_DOWNED', hue='CLASS')
 plt.show()
 
-lm = smf.ols('LOAD_DOWNED ~ pad_canopy:CLASS',surfaceBiomassPlot).fit()
+lm = smf.ols('LOAD_DOWNED ~ pad_canopy:CLASS', surface_biomass_plot).fit()
 print(lm.summary())
 print('RMSE = ',(lm.resid**2).mean()**.5)
 
-sns.scatterplot(surfaceBiomassPlot,x='pad_surface',y='LOAD_STANDING',hue='CLASS')
+sns.scatterplot(surface_biomass_plot, x='pad_surface', y='LOAD_STANDING', hue='CLASS')
 plt.show()
 
-lm = smf.ols('LOAD_STANDING ~ pad_surface:CLASS',surfaceBiomassPlot).fit()
+lm = smf.ols('LOAD_STANDING ~ pad_surface:CLASS', surface_biomass_plot).fit()
 print(lm.summary())
 print('RMSE = ',(lm.resid**2).mean()**.5)
 
@@ -248,11 +179,11 @@ outliers = ['T0523061403','T1423071101']
 df_all = df_all[~(df_all['Plot_ID'].isin(outliers))]
 
 results = []
-if byVegType:
-    for classId in df_all['CLASS'].unique():
-        df_class = df_all[df_all['CLASS']==classId]
+if by_veg_type:
+    for class_id in df_all['CLASS'].unique():
+        df_class = df_all[df_all['CLASS'] == class_id]
         plots = pd.DataFrame(df_class['Plot_ID'].unique())
-        if leaveOneOut:
+        if leave_one_out:
             nfolds = len(plots)
         else:
             nfolds = 10
@@ -260,20 +191,20 @@ if byVegType:
         np.random.shuffle(kvals)
         plots['k'] = kvals[:len(plots)]
         for k in range(nfolds):
-            trainPlots = plots.loc[plots['k']!=k,0]
-            testPlots = plots.loc[plots['k']==k,0]
-            trainData = df_class[(df_class['Plot_ID'].isin(trainPlots))]
-            testData = df_class[(df_class['Plot_ID'].isin(testPlots))]
-            model = FoliageProfileModel()
-            model.fit(trainData, trainData, biomassCols=biomassClasses, cellSize=cellSize, sigma=sigma, lidarValueCol=feature)
-            pred = model.predict(testData,lidarValueCol=feature)
+            train_plots = plots.loc[plots['k'] != k,0]
+            test_plots = plots.loc[plots['k'] == k,0]
+            train_data = df_class[(df_class['Plot_ID'].isin(train_plots))]
+            test_data = df_class[(df_class['Plot_ID'].isin(test_plots))]
+            model = CanopyBulkDensityModel()
+            model.fit(train_data, train_data, biomassCols=biomass_classes, cellSize=cell_size, sigma=sigma, lidarValueCol=feature)
+            pred = model.predict(test_data, lidarValueCol=feature)
             results.append(pred)
-        with open(classId+'.model','wb') as f:
+        with open(class_id + '.model', 'wb') as f:
             pickle.dump(model,f)
 else:
     df_class = df_all
     plots = pd.DataFrame(df_class['Plot_ID'].unique())
-    if leaveOneOut:
+    if leave_one_out:
         nfolds = len(plots)
     else:
         nfolds = 3
@@ -281,27 +212,27 @@ else:
     np.random.shuffle(kvals)
     plots['k'] = kvals[:len(plots)]
     for k in range(nfolds):
-        trainPlots = plots.loc[plots['k'] != k, 0]
-        testPlots = plots.loc[plots['k'] == k, 0]
-        trainData = df_class[(df_class['Plot_ID'].isin(trainPlots))]
-        testData = df_class[(df_class['Plot_ID'].isin(testPlots))]
-        model = FoliageProfileModel()
-        model.fit(lidarProfile = trainData, biomassProfile=trainData, biomassCols=biomassClasses, cellSize=cellSize, sigma=sigma,
+        train_plots = plots.loc[plots['k'] != k, 0]
+        test_plots = plots.loc[plots['k'] == k, 0]
+        train_data = df_class[(df_class['Plot_ID'].isin(train_plots))]
+        test_data = df_class[(df_class['Plot_ID'].isin(test_plots))]
+        model = CanopyBulkDensityModel()
+        model.fit(lidarProfile = train_data, biomassProfile=train_data, biomassCols=biomass_classes, cellSize=cell_size, sigma=sigma,
                   lidarValueCol=feature, fitIntercept=True, twoStageFit=True)
-        pred = model.predict(testData, lidarValueCol=feature)
+        pred = model.predict(test_data, lidarValueCol=feature)
         results.append(pred)
     with open('combined.model', 'wb') as f:
         pickle.dump(model, f)
 
 results = pd.concat(results)
-results['volTotal'] = math.pi * gridRadius**2 * cellSize
+results['volTotal'] = math.pi * grid_radius ** 2 * cell_size
 results = results.fillna(0)
 results['biomass'] = results['TOTAL']
 plots = results['Plot_ID'].unique()
 
 for plot in plots:
     results_filter = results[results['Plot_ID']==plot]
-    results_filter.to_csv(exportFolder + '\\' + 'Final_Profile' + '\\' + plot+'.csv')
+    results_filter.to_csv(export_folder + '\\' + 'Final_Profile' + '\\' + plot + '.csv')
 
 
 import matplotlib.pyplot as plt
@@ -310,8 +241,8 @@ results_plot = results.pivot_table(index='Plot_ID',aggfunc={'biomass':['mean','m
                                                             'biomassPred':['mean','max'],
                                                             'occluded':'mean', 'volTotal':'sum'}).reset_index()
 
-results_plot['biomass','sum'] = results_plot['biomass','mean'] * results_plot['volTotal','sum'] / (math.pi * plotRadius**2 / 10000)
-results_plot['biomassPred','sum'] = results_plot['biomassPred','mean'] * results_plot['volTotal','sum'] / (math.pi * plotRadius**2 / 10000)
+results_plot['biomass','sum'] = results_plot['biomass','mean'] * results_plot['volTotal','sum'] / (math.pi * plot_radius ** 2 / 10000)
+results_plot['biomassPred','sum'] = results_plot['biomassPred','mean'] * results_plot['volTotal','sum'] / (math.pi * plot_radius ** 2 / 10000)
 
 results_plot['CLASS'] = [get_class(string) for string in results_plot['Plot_ID']]
 
@@ -335,16 +266,16 @@ ax1.set_ylim(ax1.get_xlim())
 ax2.set_ylim(ax2.get_xlim())
 ax1.set_title('r^2 = '+str(round(score_cfl['r2'],2))+' rmse = '+str(round(score_cfl['rmse'],2)))
 ax2.set_title('r^2 = '+str(round(score_cbd['r2'],2))+' rmse = '+str(round(score_cbd['rmse'],2)))
-plt.savefig(exportFolder+'_'.join(['Results',feature,str(cellSize),str(maxOcclusion),str(sigma)])+'.pdf')
+plt.savefig(export_folder + '_'.join(['Results', feature, str(cell_size), str(max_occlusion), str(sigma)]) + '.pdf')
 plt.show()
 
-if generateTestFigure:
+if generate_test_figure:
     import polars as pl
     plotname = 'T1423080202'
-    summaryFilepath = [Path(filename) for filename in tls_summary_files if plotname in filename][0]
-    basename = summaryFilepath.name
-    dempath = Path('/'.join(list(summaryFilepath.parts[:-2])+['DEM',basename]))
-    pointspath = Path('/'.join(list(summaryFilepath.parts[:-2])+['Points',basename]))
+    summary_filepath = [Path(filename) for filename in tls_summary_files if plotname in filename][0]
+    basename = summary_filepath.name
+    dempath = Path('/'.join(list(summary_filepath.parts[:-2]) + ['DEM', basename]))
+    pointspath = Path('/'.join(list(summary_filepath.parts[:-2]) + ['Points', basename]))
     pts = pl.read_csv(pointspath)
     demPts = pl.read_csv(dempath)
     results_filter = results[(results['Plot_ID']==plotname) & (results['height']>0)]
@@ -360,15 +291,15 @@ if generateTestFigure:
     ax2.legend()
     plt.show()
 
-if generateFigures:
+if generate_figures:
     import polars as pl
     plots = results['Plot_ID'].unique()
     np.random.shuffle(plots)
     for plotname in plots:
-        summaryFilepath = [Path(filename) for filename in tls_summary_files if plotname in filename][0]
-        basename = summaryFilepath.name
-        dempath = Path('/'.join(list(summaryFilepath.parts[:-2])+['DEM',basename]))
-        pointspath = Path('/'.join(list(summaryFilepath.parts[:-2])+['Points',basename]))
+        summary_filepath = [Path(filename) for filename in tls_summary_files if plotname in filename][0]
+        basename = summary_filepath.name
+        dempath = Path('/'.join(list(summary_filepath.parts[:-2]) + ['DEM', basename]))
+        pointspath = Path('/'.join(list(summary_filepath.parts[:-2]) + ['Points', basename]))
         pts = pl.read_csv(pointspath)
         demPts = pl.read_csv(dempath)
         results_filter = results[(results['Plot_ID']==plotname) & (results['height']>0)]
@@ -387,6 +318,6 @@ if generateFigures:
         ax1.set_ylabel('Height (m)')
         ax1.set_xlabel('Easting (m)')
         ax2.set_xlabel('Canopy Bulk Density (kg/m^3)')
-        plt.savefig(exportFolder+plotname+'.pdf')
+        plt.savefig(export_folder + plotname + '.pdf')
         plt.show()
 

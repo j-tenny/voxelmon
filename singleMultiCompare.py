@@ -142,21 +142,26 @@ plt.axline((0,0),(1,1),color='red')
 plt.show()
 
 print('Per bin with refit')
-
-f,[ax1,ax2] = plt.subplots(ncols=2, constrained_layout=True, figsize = [6,4])
 score(df_all['padMulti'],df_all['padSingle'],refit=True)
-
 lm = smf.ols('padMulti~padSingle',df_all).fit()
-print(lm.summary())
+print(lm.profile())
+
+f,[ax1,ax2] = plt.subplots(ncols=2, figsize = [7,4])
 
 sns.scatterplot(df_all,x='padSingle',y='padMulti',hue='class',palette=['orange','green','blue'],ax=ax1)
 ax1.axline((0,lm.params['Intercept']),slope=lm.params['padSingle'],color='black')
 ax1.axline((0,0),(1,1),color='black',linestyle='dashed')
 ax1.set_ylim(ax1.get_xlim())
 
+ax1.legend(loc='lower right')
+ax2.legend(loc='lower right')
+ax1.set_xlabel('Single-Scan LAD ($m^2$/$m^3$)')
+ax1.set_ylabel('Multiple-Scan LAD ($m^2$/$m^3$)')
+ax1.text(.05,.93,'$R^2$ = ' + str(lm.rsquared.round(2)),transform=ax1.transAxes)
+ax1.text(.05,.88,'RMSE = ' + str(((lm.resid ** 2).mean() ** .5).round(2))+ ' $m^2$/$m^2$',transform=ax1.transAxes)
+
 df_all['resid'] = lm.resid
 df_all['sq_resid'] = lm.resid ** 2
-
 
 print('Per plot with refit')
 
@@ -164,11 +169,18 @@ score(df_all_plot['paiMulti'],df_all_plot['paiSingle'],refit=True)
 
 
 lm2 = smf.ols('paiMulti~paiSingle',df_all_plot).fit()
-print(lm2.summary())
+print(lm2.profile())
 sns.scatterplot(df_all_plot,x='paiSingle',y='paiMulti',hue='class',palette=['orange','green','blue'],ax=ax2)
 ax2.axline((0,lm2.params['Intercept']),slope=lm2.params['paiSingle'],color='black')
 ax2.axline((0,0),(1,1),color='black',linestyle='dashed')
 ax2.set_xlim(ax2.get_ylim())
+
+ax2.set_xlabel('Single-Scan LAI ($m^2$/$m^2$)')
+ax2.set_ylabel('Multiple-Scan LAI ($m^2$/$m^2$)')
+ax2.text(.05,.93,'$R^2$ = ' + str(lm2.rsquared.round(2)),transform=ax2.transAxes)
+ax2.text(.05,.88,'RMSE = ' + str(((lm2.resid ** 2).mean() ** .5).round(2)) + ' $m^2$/$m^2$',transform=ax2.transAxes)
+
+f.tight_layout(pad=.5, w_pad=2.5)
 plt.savefig('D:/DataWork/pypadResults/single-multi_pad.pdf')
 plt.show()
 

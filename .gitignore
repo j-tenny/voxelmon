@@ -3,3 +3,7 @@
 comparePrePostShoeTank.ipynb
 stats.ipynb
 *.pyc
+/voxelmon.egg-info
+/dist
+/build
+sancarlos_prepost.py

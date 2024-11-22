@@ -1,10 +1,20 @@
-def get_files_list(directory, keyword):
+import numpy as np
+
+
+def get_files_list(directory, keyword, recursive=True):
     import os
     import fnmatch
     matching_files = []
-    for root, dirs, files in os.walk(directory):
+    if recursive:
+        for root, dirs, files in os.walk(directory):
+            for filename in fnmatch.filter(files, f'*{keyword}*'):
+                matching_files.append(os.path.join(root, filename))
+    else:
+        files = os.listdir(directory)
         for filename in fnmatch.filter(files, f'*{keyword}*'):
-            matching_files.append(os.path.join(root, filename))
+            path = os.path.join(directory, filename)
+            if os.path.isfile(path):
+                matching_files.append(path)
     return matching_files
 
 
@@ -167,3 +177,174 @@ def plot_side_view(xyz,direction=0,demPtsNormalize=None,returnData=False):
         return [np.rot90(bins),extents2D]
     else:
         return plt.imshow(np.rot90(bins),extent=extents2D)
+
+def summarize_profiles(profiles, bin_height=.1, min_height=1., fsg_threshold=.011, cbd_col='cbd_pred', height_col ='height', pad_col='pad', occlusion_col='occluded', plot_id_col='Plot_ID'):
+
+    profiles_filter_h = profiles[profiles[height_col]>=min_height]
+    summary = profiles_filter_h.pivot_table(index=plot_id_col,
+                                            aggfunc={cbd_col: ['sum', 'max'], pad_col: 'sum', occlusion_col: 'mean'}
+                                            ).reset_index()
+
+    summary.columns = [plot_id_col,'cbd_max','cfl','occlusion','plant_area']
+    summary['cfl'] *= bin_height
+    summary['plant_area'] *= bin_height
+    summary['fsg'] = 0.
+    summary['fsg_h1'] = min_height
+    summary['fsg_h2'] = min_height
+
+    # Estimate fuel strata gap. Tolerate noise in profile by looking for a block of bins below the fsg threshold.
+    min_contiguous_empty = .5 # Meters
+    min_contiguous_filled = .5 # Meters
+    #noise_bumps_allowed = 2 # Number of noisy bins
+    noise_bumps_allowed = int(.25 * (min_contiguous_empty / bin_height)) + 1 # Number of noisy bins
+
+    for plot_id in profiles[plot_id_col].unique():
+        profile = profiles[profiles[plot_id_col]==plot_id]
+        profile = profile.sort_values(by=height_col)
+        profile = profile[[height_col,cbd_col]].to_numpy()
+        #profile[np.isnan(profile[:,1]),1] = 0
+
+        fsg_h1 = min_height
+        fsg_h2 = min_height
+        fsg_h1_temp = min_height
+        fsg_h2_temp = min_height
+        empty_counter = 0
+        filled_counter = 0
+        noise_bumps = 0
+
+        for i in range(profile.shape[0]):
+            if profile[i,1] < fsg_threshold:
+                # Bin is "empty"
+                # Decide whether to reset filled_counter
+                if filled_counter != 0:
+                    noise_bumps += 1
+                    if noise_bumps > noise_bumps_allowed:
+                        filled_counter = 0
+
+                # If empty_counter is zero, set height as bottom of fsg. Start counting from here.
+                if empty_counter == 0:
+                    fsg_h1_temp = profile[i,0]
+                    noise_bumps = 0
+
+                # Increase empty counter
+                empty_counter += 1
+
+                # If empty space meets criteria, save the height we've been counting from. Ensure fsg_h1 is only set once.
+                if (fsg_h1==min_height) and (empty_counter >= (min_contiguous_empty / bin_height)):
+                    fsg_h1 = fsg_h1_temp
+                    filled_counter = 0 # Record fsg top at next "filled" bin
+            elif profile[i,1] >= fsg_threshold:
+                # Bin is "filled"
+                # Decide whether to reset empty_counter
+                if empty_counter != 0:
+                    noise_bumps += 1
+                    if noise_bumps > noise_bumps_allowed:
+                        empty_counter = 0
+
+                # If filled_counter is zero, set height as top of fsg. Start counting from here.
+                if filled_counter==0:
+                    fsg_h2_temp = profile[i,0]
+                    noise_bumps = 0
+
+                # Increase counter
+                filled_counter += 1
+
+                # If filled space meets criteria, save height and we're done
+                if filled_counter >= min_contiguous_filled / bin_height:
+                    fsg_h2 = fsg_h2_temp
+                    break
+
+            else:
+                # Data is probably na
+                continue
+
+        summary.loc[summary[plot_id_col] == plot_id, 'fsg_h1'] = fsg_h1
+        summary.loc[summary[plot_id_col] == plot_id, 'fsg_h2'] = fsg_h2
+        summary.loc[summary[plot_id_col] == plot_id, 'fsg'] = fsg_h2 - fsg_h1
+
+    return summary
+
+
+
+
+
+def smooth(values,sigma):
+    from scipy.ndimage import gaussian_filter1d
+    valuesSmooth = gaussian_filter1d(values,sigma=sigma,mode='constant',cval=np.nan)
+    # Fill missing values on with original, non-smoothed values
+    valuesSmooth[np.isnan(valuesSmooth)] = values[np.isnan(valuesSmooth)]
+    return valuesSmooth
+
+
+def interp2D_w_nearest_neighbor_extrapolation(xy_train, values_train, xy_predict):
+    import scipy
+
+    f = scipy.interpolate.LinearNDInterpolator(xy_train, values_train)
+    # evaluate the original interpolator. Out-of-bounds values are nan.
+    values_predict = f(xy_predict)
+    nans = np.isnan(values_predict)
+    if nans.any():
+        # Build a KD-tree for efficient nearest neighbor search.
+        tree = scipy.spatial.cKDTree(xy_train)
+        # Find the nearest neighbors for the NaN points.
+        distances, indices = tree.query(xy_predict[nans], k=1)
+        # Replace NaN values with the values from the nearest neighbors.
+        values_predict[nans] = values_train[indices]
+    return values_predict
+
+
+def interp2D_w_cubic_extrapolation(xy_train, values_train, xy_predict):
+    import scipy
+
+    f = scipy.interpolate.LinearNDInterpolator(xy_train, values_train)
+    # evaluate the original interpolator. Out-of-bounds values are nan.
+    values_predict = f(xy_predict)
+    nans = np.isnan(values_predict)
+    if nans.any():
+        import statsmodels.api as sm
+        def create_dmatrix(xy):
+            dmatrix = np.ones([xy.shape[0],7],dtype=float)
+            dmatrix[:,1] = xy[:,0]
+            dmatrix[:, 2] = xy[:,1]
+            dmatrix[:, 3] = xy[:, 0] ** 2
+            dmatrix[:, 4] = xy[:, 0] ** 3
+            dmatrix[:, 5] = xy[:, 1] ** 2
+            dmatrix[:, 6] = xy[:, 1] ** 3
+            return dmatrix
+        model = sm.OLS(values_train,create_dmatrix(xy_train)).fit()
+        values_predict[nans] = model.predict(create_dmatrix(xy_predict[nans]))
+    return values_predict
+
+def _default_folder_setup(export_folder):
+    from pathlib import Path
+    import os
+
+    if not Path(export_folder).exists():
+        os.makedirs(export_folder)
+    if not Path(export_folder).joinpath('DEM').exists():
+        os.mkdir(Path(export_folder).joinpath('DEM'))
+    if not Path(export_folder).joinpath('Points').exists():
+        os.mkdir(Path(export_folder).joinpath('Points'))
+    if not Path(export_folder).joinpath('PAD').exists():
+        os.mkdir(Path(export_folder).joinpath('PAD'))
+    if not Path(export_folder).joinpath('PAD_Summary').exists():
+        os.mkdir(Path(export_folder).joinpath('PAD_Summary'))
+    if not Path(export_folder).joinpath('Plot_Summary').exists():
+        os.mkdir(Path(export_folder).joinpath('Plot_Summary'))
+
+def _default_postprocessing(grid, plot_name, export_folder, plot_radius=11.3, max_occlusion=.8, sigma1=.1, min_pad_foliage=.01, max_pad_foliage=6):
+    import os
+    import pandas as pd
+    grid.filter_pad_noise_ivf()
+    grid.gaussian_filter_PAD(sigma=sigma1)
+    grid.classify_foliage_with_PAD(maxOcclusion=max_occlusion, minPADFoliage=min_pad_foliage, maxPADFoliage=max_pad_foliage)
+    profile = grid.summarize_by_height(clipRadius=plot_radius)
+    summary = grid.calculate_dem_metrics()
+    summary['canopy_cover'] = grid.calculate_canopy_cover()
+    summary['plot_id'] = plot_name
+    summary = pd.DataFrame(summary, index=[0])
+    grid.export_grid_as_csv(os.path.join(export_folder, 'PAD/', plot_name) + '.csv')
+    grid.export_dem_as_csv(os.path.join(export_folder, 'DEM/', plot_name) + '.csv')
+    profile.write_csv(os.path.join(export_folder, 'PAD_Summary/', plot_name) + '.csv')
+    summary.to_csv(os.path.join(export_folder, 'Plot_Summary/', plot_name) + '.csv', index=False)
+    return profile,summary
