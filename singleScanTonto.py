@@ -285,6 +285,10 @@ else:
         # Get predictions for test set
         pred = model.predict_and_test(test_data, biomassCols=biomass_classes, lidarValueCol=feature, classIdCol='CLASS', resultCol='biomassPred')
         results.append(pred)
+        print('Effective Leaf Area Density Combined Model:')
+        print(model.mass_ratio)
+        print('alpha = ',model.alpha)
+        print()
     # Train and save final model based on all training data
     model = CanopyBulkDensityModel()
     model.fit(df_class, biomassCols=biomass_classes, sigma=sigma, plotIdCol='Plot_ID',

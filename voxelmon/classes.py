@@ -4,6 +4,8 @@ import time
 
 import voxelmon
 
+from sklearn.linear_model import Ridge
+
 
 class Grid:
     def __init__(self,extents,cellSize):
@@ -904,12 +906,25 @@ class CanopyBulkDensityModel:
 
     def fit(self, profileData, lidarValueCol, biomassCols, classIdCol='class', plotIdCol='Plot_ID', heightCol='height', sigma=1.2, minHeight=1, fitIntercept=False,twoStageFit=False):
         import statsmodels.formula.api as smf
+        import sklearn.linear_model as sklm
         from voxelmon import smooth
         import pandas as pd
 
         self.height_col = heightCol
         self.sigma = sigma
         self.feature = lidarValueCol
+
+        # Get species distribution profile for each class
+        speciesDist = profileData[[classIdCol,heightCol]+biomassCols].groupby([classIdCol,heightCol]).sum()
+        speciesDistSum = speciesDist.sum(axis=1)
+        for col in speciesDist.columns:
+            speciesDist[col]=speciesDist[col] / speciesDistSum
+
+        self.species_profiles = {}
+        for classId in profileData[classIdCol].unique():
+            self.species_profiles[classId] = speciesDist.loc[classId, :].reset_index().ffill()
+
+        # Apply gaussian smoothing filter to profile data for each plot
 
         profiles_list = []
 
@@ -924,49 +939,45 @@ class CanopyBulkDensityModel:
         profileData = pd.concat(profiles_list)
         profileData = profileData[profileData[heightCol]>=minHeight]
 
-
-        # Use linear modelling to get feature:biomass coefficient for each species
-        if fitIntercept:
-            lm = smf.mixedlm(formula=lidarValueCol + '~' + '+'.join(biomassCols),
-                             data=profileData, groups=profileData[plotIdCol],
-                             re_formula="0+CBD_TOTAL").fit()
-            coef = lm.params.copy()
-            self.intercept = coef.iloc[0]
+        n_alpha_test = 50
+        alpha_rmse = np.zeros([n_alpha_test,2],dtype=float)
+        alpha_rmse[1:,0] = np.logspace(-3,0,n_alpha_test-1)
+        for i in range(n_alpha_test):
+            alpha = alpha_rmse[i,0]
+            lm = _CenteredRidge(alpha=alpha,target=1)
+            lm.fit(profileData[biomassCols], profileData[lidarValueCol])
+            coef = lm.coef_
+            self.intercept = lm.intercept_
             coef[coef == 0] = -1
             coef = 1 / coef
             coef[coef <= 0] = 0
-            self.mass_ratio = coef.iloc[1:len(biomassCols) + 1].to_dict()
-        else:
-            lm = smf.mixedlm(formula= lidarValueCol + '~' + '+'.join(biomassCols)+'-1',
-                             data = profileData, groups = profileData[plotIdCol],
-                             re_formula="~0+CBD_TOTAL").fit()
+            mass_ratio = pd.Series(coef,index=biomassCols)
+            self.mass_ratio = mass_ratio.to_dict()
+            predicted = self.predict(lidarProfile=profileData, lidarValueCol=lidarValueCol, heightCol=heightCol,
+                                    classIdCol=classIdCol, resultCol='cbd_pred')
+            predicted_plot = predicted.pivot_table(values=['CBD_TOTAL', 'cbd_pred'], index=plotIdCol, aggfunc='sum')
+            lm2 = smf.ols('CBD_TOTAL~cbd_pred-1', predicted_plot).fit()
+            alpha_rmse[i,1] = np.sqrt(np.mean(lm2.resid ** 2))
 
-            coef = lm.params.copy()
-            coef[coef==0]=-1
-            coef = 1 / coef
-            coef[coef<=0] = 0
-            self.mass_ratio = coef.iloc[:len(biomassCols)].to_dict()
-            self.intercept = 0
+        self.alpha = alpha_rmse[np.argmin(alpha_rmse[:,1]),0]
+        lm = _CenteredRidge(alpha=self.alpha, target=1)
+        lm.fit(profileData[biomassCols], profileData[lidarValueCol])
+        coef = lm.coef_
+        self.intercept = lm.intercept_
+        coef[coef == 0] = -1
+        coef = 1 / coef
+        coef[coef <= 0] = 0
+        mass_ratio = pd.Series(coef, index=biomassCols)
+        self.mass_ratio = mass_ratio.to_dict()
 
+        predicted = self.predict(lidarProfile=profileData,lidarValueCol=lidarValueCol,heightCol=heightCol,classIdCol=classIdCol,resultCol='cbd_pred')
+        predicted_plot = predicted.pivot_table(values=['CBD_TOTAL','cbd_pred'],index=plotIdCol,aggfunc='sum')
+        lm2 = smf.ols('CBD_TOTAL~cbd_pred-1',predicted_plot).fit()
 
-        # Get species distribution profile for each class
-        speciesDist = profileData[[classIdCol,heightCol]+biomassCols].groupby([classIdCol,heightCol]).sum()
-        speciesDistSum = speciesDist.sum(axis=1)
-        for col in speciesDist.columns:
-            speciesDist[col]=speciesDist[col] / speciesDistSum
+        correction = float(lm2.params.iloc[0])
+        for key in self.mass_ratio.keys():
+            self.mass_ratio[key] *= correction
 
-        self.species_profiles = {}
-        for classId in profileData[classIdCol].unique():
-            self.species_profiles[classId] = speciesDist.loc[classId, :].reset_index().ffill()
-
-        if twoStageFit:
-            # Correct for biased predictions
-            predicted = self.predict(lidarProfile=profileData,lidarValueCol=lidarValueCol,heightCol=heightCol,classIdCol=classIdCol,resultCol='cbd_pred')
-            predicted_plot = predicted.pivot_table(values=['CBD_TOTAL','cbd_pred'],index=plotIdCol,aggfunc='sum')
-            lm2 = smf.ols('CBD_TOTAL~cbd_pred-1',predicted_plot).fit()
-            correction = float(lm2.params.iloc[0])
-            for key in self.mass_ratio.keys():
-                self.mass_ratio[key] *= correction
 
     def predict(self,lidarProfile,lidarValueCol='pad',heightCol='height',plotIdCol = 'Plot_ID',classIdCol='class',resultCol='cbd_pred'):
         import pandas as pd
@@ -1017,6 +1028,13 @@ class CanopyBulkDensityModel:
             pickle.dump(self, f)
 
 
+class _CenteredRidge(Ridge):
+    def __init__(self, alpha=1.0, target=1.0, **kwargs):
+        super().__init__(alpha=alpha, **kwargs)
+        self.target = target
 
-
-
+    def fit(self, X, y):
+        # Adjust y to include the target value in the penalty
+        X_adj = X
+        y_adj = y - self.alpha * self.target
+        return super().fit(X_adj, y_adj)

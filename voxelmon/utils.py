@@ -315,6 +315,7 @@ def interp2D_w_cubic_extrapolation(xy_train, values_train, xy_predict):
         values_predict[nans] = model.predict(create_dmatrix(xy_predict[nans]))
     return values_predict
 
+
 def _default_folder_setup(export_folder):
     from pathlib import Path
     import os
