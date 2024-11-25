@@ -32,6 +32,7 @@ process = False # Process (or reprocess) ptx files to produce PAD estimates
 by_veg_type = True # True: Estimate leaf mass per area seperately for each vegetation type. False: combine all veg types when estimating LMA
 leave_one_out = False # True: Use leave-one-out cross validation. False: Use k-fold cross validation
 nfolds = 10 # Number of folds used in k-fold cross validation. Set to 1 to train with all data (can't test).
+bootstrap_confidence_intervals = True
 generate_test_figure = False # Show figure from individual random plot.
 generate_figures = False # Generate figures for all plots
 variance_stats = False # Generate stats for effects of terrain, occlusion, height
@@ -359,6 +360,54 @@ ax2.text(.05,.88,'RMSE = ' + str(round(score_cbd['rmse'], 2)) + ' kg/$m^3$',tran
 
 plt.savefig(export_folder + '_'.join(['Results', feature, str(cell_size), str(max_occlusion), str(sigma)]) + '.pdf')
 plt.show()
+
+if bootstrap_confidence_intervals:
+    nsamples = 5000
+    # Get list of plot names
+    plots = pd.DataFrame(df_all['Plot_ID'].unique())
+    coef_all = []
+    for sample_ind in range(nsamples):
+        resampled_df = []
+        plot_indices = np.random.random_integers(0,plots.shape[0],plots.shape[0])
+        for plot_i in plot_indices:
+            resampled_df.append(df_class[df_all['Plot_ID']==plots[plot_i]])
+        resampled_df = pd.concat(resampled_df)
+
+        # Train model
+        if by_veg_type:
+            # Calculate effective leaf mass per area separately for each vegetation type
+            for classId in resampled_df['CLASS'].unique():
+                # Filter to this vegetation type
+                df_class = resampled_df[resampled_df['CLASS'] == classId]
+                # Train and save final model based on all training data
+                model = CanopyBulkDensityModel()
+                model.fit(df_class, biomassCols=biomass_classes, sigma=sigma, plotIdCol='Plot_ID',
+                          lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=True, twoStageFit=True)
+                coef = model.mass_ratio
+                coef['CLASS'] = classId
+                coef_all.append(coef)
+
+        else:
+            # Calculate effective leaf mass per area combining data from all vegetation types
+            # Train and save final model based on all training data
+            model = CanopyBulkDensityModel()
+            model.fit(resampled_df, biomassCols=biomass_classes, sigma=sigma, plotIdCol='Plot_ID',
+                      lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=True, twoStageFit=True)
+            coef_all.append(model.mass_ratio)
+    results = pd.DataFrame(coef_all)
+
+
+    def quantile_05(series):
+        return series.quantile(0.05)
+    def quantile_95(series):
+        return series.quantile(0.95)
+
+    if by_veg_type:
+        results_summary = results.pivot_table(aggfunc=['median','std', quantile_05, quantile_95], index='CLASS')
+        print(results_summary)
+    else:
+        results_summary = results.pivot_table(aggfunc=['median', 'std', quantile_05, quantile_95])
+        print(results_summary)
 
 #%%#####################################################################################################################
 if generate_test_figure:
