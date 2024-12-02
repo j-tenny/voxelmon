@@ -898,13 +898,13 @@ class CanopyBulkDensityModel:
         return obj
 
     @classmethod
-    def fit(cls, profileData, lidarValueCol, biomassCols, classIdCol='class', plotIdCol='Plot_ID', heightCol='height', sigma=1.2, minHeight=1, fitIntercept=False,twoStageFit=False):
+    def fit(cls, profileData, lidarValueCol, biomassCols, classIdCol='class', plotIdCol='Plot_ID', heightCol='height', sigma=1.2, minHeight=1, fitIntercept=False,twoStageFit=False, alpha_test = np.logspace(-3,0,19)):
         model = CanopyBulkDensityModel().fit(profileData=profileData, lidarValueCol=lidarValueCol, biomassCols=biomassCols,
                                              sigma=sigma, minHeight=minHeight, fitIntercept=fitIntercept,
-                                             twoStageFit=twoStageFit, plotIdCol=plotIdCol, heightCol=heightCol, classIdCol=classIdCol)
+                                             twoStageFit=twoStageFit, plotIdCol=plotIdCol, heightCol=heightCol, classIdCol=classIdCol, alpha_test=alpha_test)
         return model
 
-    def fit(self, profileData, lidarValueCol, biomassCols, classIdCol='class', plotIdCol='Plot_ID', heightCol='height', sigma=1.2, minHeight=1, fitIntercept=False,twoStageFit=False):
+    def fit(self, profileData, lidarValueCol, biomassCols, classIdCol='class', plotIdCol='Plot_ID', heightCol='height', sigma=1.2, minHeight=1, fitIntercept=False,twoStageFit=False, alpha_test = np.logspace(-3,0,19)):
         import statsmodels.formula.api as smf
         import sklearn.linear_model as sklm
         from voxelmon import smooth
@@ -939,12 +939,11 @@ class CanopyBulkDensityModel:
         profileData = pd.concat(profiles_list)
         profileData = profileData[profileData[heightCol]>=minHeight]
 
-        n_alpha_test = 50
-        alpha_rmse = np.zeros([n_alpha_test,2],dtype=float)
-        alpha_rmse[1:,0] = np.logspace(-3,0,n_alpha_test-1)
-        for i in range(n_alpha_test):
+        alpha_rmse = np.zeros([alpha_test.shape[0],2],dtype=float)
+        alpha_rmse[:,0] = alpha_test
+        for i in range(alpha_test.shape[0]):
             alpha = alpha_rmse[i,0]
-            lm = _CenteredRidge(alpha=alpha,target=1)
+            lm = _CenteredRidge(alpha=alpha,target=100)
             lm.fit(profileData[biomassCols], profileData[lidarValueCol])
             coef = lm.coef_
             self.intercept = lm.intercept_
@@ -960,7 +959,7 @@ class CanopyBulkDensityModel:
             alpha_rmse[i,1] = np.sqrt(np.mean(lm2.resid ** 2))
 
         self.alpha = alpha_rmse[np.argmin(alpha_rmse[:,1]),0]
-        lm = _CenteredRidge(alpha=self.alpha, target=1)
+        lm = _CenteredRidge(alpha=self.alpha, target=100)
         lm.fit(profileData[biomassCols], profileData[lidarValueCol])
         coef = lm.coef_
         self.intercept = lm.intercept_
@@ -1038,3 +1037,4 @@ class _CenteredRidge(Ridge):
         X_adj = X
         y_adj = y - self.alpha * self.target
         return super().fit(X_adj, y_adj)
+

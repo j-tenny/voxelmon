@@ -29,12 +29,12 @@ surface_biomass = pd.read_csv('C:\\Users\\john1\\OneDrive - Northern Arizona Uni
 sigma = 1.2 # Sigma value used in gaussian smoothing filter applied to canopy bulk density profiles
 feature = 'pad' # Can be 'pad' to train model with plant area density or 'foliage' to train model with foliage volume
 process = False # Process (or reprocess) ptx files to produce PAD estimates
-by_veg_type = True # True: Estimate leaf mass per area seperately for each vegetation type. False: combine all veg types when estimating LMA
+by_veg_type = False # True: Estimate leaf mass per area seperately for each vegetation type. False: combine all veg types when estimating LMA
 leave_one_out = False # True: Use leave-one-out cross validation. False: Use k-fold cross validation
 nfolds = 10 # Number of folds used in k-fold cross validation. Set to 1 to train with all data (can't test).
 bootstrap_confidence_intervals = True
 generate_test_figure = False # Show figure from individual random plot.
-generate_figures = False # Generate figures for all plots
+generate_figures = True # Generate figures for all plots
 variance_stats = False # Generate stats for effects of terrain, occlusion, height
 
 #%%#####################################################################################################################
@@ -219,11 +219,13 @@ plt.show()
 ### MODEL CANOPY FUELS ###
 # Remove surface fuel and outliers
 df_all = df_all[df_all['height'] >= 1]
-#outliers = ['T0523061403', 'T1423071101']
-#df_all = df_all[~(df_all['Plot_ID'].isin(outliers))]
+outliers = ['T1423071101']
+df_all = df_all[~(df_all['Plot_ID'].isin(outliers))]
 
 # Train model
 results = []
+alpha_test = np.logspace(-5,-1,100)
+#alpha_test = np.linspace(.02,.04,5)
 if by_veg_type:
     # Calculate effective leaf mass per area separately for each vegetation type
     for classId in df_all['CLASS'].unique():
@@ -248,14 +250,14 @@ if by_veg_type:
             # Train model on training set
             model = CanopyBulkDensityModel()
             model.fit(train_data, biomassCols=biomass_classes, sigma=sigma, plotIdCol='Plot_ID',
-                      lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=True, twoStageFit=True)
+                      lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=True, twoStageFit=True, alpha_test=alpha_test)
             # Get predictions for test set
             pred = model.predict_and_test(test_data, biomassCols=biomass_classes, lidarValueCol=feature, classIdCol='CLASS', resultCol='biomassPred')
             results.append(pred)
         # Train and save final model based on all training data
         model = CanopyBulkDensityModel()
         model.fit(df_class, biomassCols=biomass_classes, sigma=sigma, plotIdCol='Plot_ID',
-                  lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=True, twoStageFit=True)
+                  lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=True, twoStageFit=True, alpha_test=alpha_test)
         model.to_file(classId+'.model')
         print(f'Effective Leaf Area Density {classId} Model:')
         print(model.mass_ratio)
@@ -282,7 +284,7 @@ else:
         # Train model on training set
         model = CanopyBulkDensityModel()
         model.fit(train_data, biomassCols=biomass_classes, sigma=sigma, plotIdCol='Plot_ID',
-                  lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=True, twoStageFit=True)
+                  lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=True, twoStageFit=True, alpha_test=alpha_test)
         # Get predictions for test set
         pred = model.predict_and_test(test_data, biomassCols=biomass_classes, lidarValueCol=feature, classIdCol='CLASS', resultCol='biomassPred')
         results.append(pred)
@@ -293,7 +295,7 @@ else:
     # Train and save final model based on all training data
     model = CanopyBulkDensityModel()
     model.fit(df_class, biomassCols=biomass_classes, sigma=sigma, plotIdCol='Plot_ID',
-              lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=True, twoStageFit=True)
+              lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=True, twoStageFit=True, alpha_test=alpha_test)
     model.to_file('combined.model')
     print('Effective Leaf Area Density Combined Model:')
     print(model.mass_ratio)
@@ -362,16 +364,16 @@ plt.savefig(export_folder + '_'.join(['Results', feature, str(cell_size), str(ma
 plt.show()
 
 if bootstrap_confidence_intervals:
-    nsamples = 5000
+    nsamples = 1000
     # Get list of plot names
-    plots = pd.DataFrame(df_all['Plot_ID'].unique())
+    plots = pd.DataFrame(df_all['Plot_ID'].unique()).to_numpy().flatten()
     coef_all = []
     for sample_ind in range(nsamples):
         resampled_df = []
-        plot_indices = np.random.random_integers(0,plots.shape[0],plots.shape[0])
+        plot_indices = np.random.randint(0,plots.shape[0],plots.shape[0])
         for plot_i in plot_indices:
-            resampled_df.append(df_class[df_all['Plot_ID']==plots[plot_i]])
-        resampled_df = pd.concat(resampled_df)
+            resampled_df.append(df_all[df_all['Plot_ID']==plots[plot_i]])
+        resampled_df = pd.concat(resampled_df).reset_index(drop=True)
 
         # Train model
         if by_veg_type:
@@ -382,7 +384,7 @@ if bootstrap_confidence_intervals:
                 # Train and save final model based on all training data
                 model = CanopyBulkDensityModel()
                 model.fit(df_class, biomassCols=biomass_classes, sigma=sigma, plotIdCol='Plot_ID',
-                          lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=True, twoStageFit=True)
+                          lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=True, twoStageFit=True,alpha_test=alpha_test)
                 coef = model.mass_ratio
                 coef['CLASS'] = classId
                 coef_all.append(coef)
@@ -392,7 +394,7 @@ if bootstrap_confidence_intervals:
             # Train and save final model based on all training data
             model = CanopyBulkDensityModel()
             model.fit(resampled_df, biomassCols=biomass_classes, sigma=sigma, plotIdCol='Plot_ID',
-                      lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=True, twoStageFit=True)
+                      lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=True, twoStageFit=True,alpha_test=alpha_test)
             coef_all.append(model.mass_ratio)
     results = pd.DataFrame(coef_all)
 
@@ -404,9 +406,10 @@ if bootstrap_confidence_intervals:
 
     if by_veg_type:
         results_summary = results.pivot_table(aggfunc=['median','std', quantile_05, quantile_95], index='CLASS')
+        results_summary.to_csv(export_folder+'LMA_CI_by_veg_type.csv')
         print(results_summary)
     else:
-        results_summary = results.pivot_table(aggfunc=['median', 'std', quantile_05, quantile_95])
+        results_summary = results.agg(['median', 'std', quantile_05, quantile_95])
         print(results_summary)
 
 #%%#####################################################################################################################
