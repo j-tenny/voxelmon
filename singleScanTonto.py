@@ -32,7 +32,7 @@ process = False # Process (or reprocess) ptx files to produce PAD estimates
 by_veg_type = False # True: Estimate leaf mass per area seperately for each vegetation type. False: combine all veg types when estimating LMA
 leave_one_out = False # True: Use leave-one-out cross validation. False: Use k-fold cross validation
 nfolds = 10 # Number of folds used in k-fold cross validation. Set to 1 to train with all data (can't test).
-bootstrap_confidence_intervals = True
+bootstrap_confidence_intervals = False
 generate_test_figure = False # Show figure from individual random plot.
 generate_figures = False # Generate figures for all plots
 variance_stats = False # Generate stats for effects of terrain, occlusion, height
@@ -222,6 +222,10 @@ df_all = df_all[df_all['height'] >= 1]
 outliers = ['T1423071101']
 df_all = df_all[~(df_all['Plot_ID'].isin(outliers))]
 
+# Transform pad data
+lm = smf.ols('TOTAL~pad',df_all).fit()
+df_all['pad'] -= lm.params.iloc[0]/2
+
 # Train model
 results = []
 if by_veg_type:
@@ -248,14 +252,14 @@ if by_veg_type:
             # Train model on training set
             model = CanopyBulkDensityModel()
             model.fit(train_data, biomassCols=biomass_classes, sigma=sigma, plotIdCol='Plot_ID',
-                      lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=True, twoStageFit=True)
+                      lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=False, twoStageFit=True)
             # Get predictions for test set
             pred = model.predict_and_test(test_data, biomassCols=biomass_classes, lidarValueCol=feature, classIdCol='CLASS', resultCol='biomassPred')
             results.append(pred)
         # Train and save final model based on all training data
         model = CanopyBulkDensityModel()
         model.fit(df_class, biomassCols=biomass_classes, sigma=sigma, plotIdCol='Plot_ID',
-                  lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=True, twoStageFit=True)
+                  lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=False, twoStageFit=True)
         model.to_file(classId+'.model')
         print(f'Effective Leaf Area Density {classId} Model:')
         print(model.mass_ratio)
@@ -282,14 +286,14 @@ else:
         # Train model on training set
         model = CanopyBulkDensityModel()
         model.fit(train_data, biomassCols=biomass_classes, sigma=sigma, plotIdCol='Plot_ID',
-                  lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=True, twoStageFit=True)
+                  lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=False, twoStageFit=True)
         # Get predictions for test set
         pred = model.predict_and_test(test_data, biomassCols=biomass_classes, lidarValueCol=feature, classIdCol='CLASS', resultCol='biomassPred')
         results.append(pred)
     # Train and save final model based on all training data
     model = CanopyBulkDensityModel()
     model.fit(df_class, biomassCols=biomass_classes, sigma=sigma, plotIdCol='Plot_ID',
-              lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=True, twoStageFit=True)
+              lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=False, twoStageFit=True)
     model.to_file('combined.model')
     print('Effective Leaf Area Density Combined Model:')
     print(model.mass_ratio)
