@@ -268,12 +268,19 @@ def summarize_profiles(profiles, bin_height=.1, min_height=1., fsg_threshold=.01
 
 
 
-def smooth(values,sigma):
-    from scipy.ndimage import gaussian_filter1d
-    valuesSmooth = gaussian_filter1d(values,sigma=sigma,mode='constant',cval=np.nan)
-    # Fill missing values on with original, non-smoothed values
-    valuesSmooth[np.isnan(valuesSmooth)] = values[np.isnan(valuesSmooth)]
-    return valuesSmooth
+def smooth(values,sigma=.01):
+    import numpy as np
+    from scipy import interpolate
+
+    x = np.arange(values.shape[0])  # Independent variable
+
+    # Create a smoothing spline
+    spline = interpolate.UnivariateSpline(x, values, s=sigma)
+
+    # Smooth the data
+    values_smooth = spline(x)
+
+    return values_smooth
 
 
 def interp2D_w_nearest_neighbor_extrapolation(xy_train, values_train, xy_predict):

@@ -896,13 +896,13 @@ class CanopyBulkDensityModel:
         return obj
 
     @classmethod
-    def fit(cls, profileData, lidarValueCol, biomassCols, classIdCol='class', plotIdCol='Plot_ID', heightCol='height', sigma=1.2, minHeight=1, fitIntercept=False,twoStageFit=False):
+    def fit(cls, profileData, lidarValueCol, biomassCols, classIdCol='class', plotIdCol='Plot_ID', heightCol='height', sigma=1.2, minHeight=1, mixed_effects=False, fitIntercept=False,twoStageFit=False):
         model = CanopyBulkDensityModel().fit(profileData=profileData, lidarValueCol=lidarValueCol, biomassCols=biomassCols,
-                                             sigma=sigma, minHeight=minHeight, fitIntercept=fitIntercept,
+                                             sigma=sigma, minHeight=minHeight,mixed_effects=mixed_effects, fitIntercept=fitIntercept,
                                              twoStageFit=twoStageFit, plotIdCol=plotIdCol, heightCol=heightCol, classIdCol=classIdCol)
         return model
 
-    def fit(self, profileData, lidarValueCol, biomassCols, classIdCol='class', plotIdCol='Plot_ID', heightCol='height', sigma=1.2, minHeight=1, fitIntercept=False,twoStageFit=False):
+    def fit(self, profileData, lidarValueCol, biomassCols, classIdCol='class', plotIdCol='Plot_ID', heightCol='height', sigma=1.2, minHeight=1, mixed_effects=False, fitIntercept=False,twoStageFit=False):
         import statsmodels.formula.api as smf
         from voxelmon import smooth
         import pandas as pd
@@ -912,29 +912,16 @@ class CanopyBulkDensityModel:
         self.feature = lidarValueCol
 
         profiles_list = []
+        profileData = profileData.copy()
 
-        # Smooth profiles
-        for plot in profileData[plotIdCol].unique():
-            profileDataFilter = profileData[(profileData[plotIdCol] == plot)].copy()
-            for col in biomassCols:
-                profileDataFilter[col] = smooth(profileDataFilter[col], sigma=sigma).clip(min=0)
-            profileDataFilter['CBD_TOTAL'] = profileData[biomassCols].sum(axis=1)
-            profileDataFilter[lidarValueCol] = smooth(profileDataFilter[lidarValueCol], sigma=sigma).clip(min=0)
-            profiles_list.append(profileDataFilter)
-
-        profileData = pd.concat(profiles_list)
-        profileData = profileData[profileData[heightCol]>=minHeight]
-        profileData.loc[profileData['CBD_TOTAL']<.00001, 'CBD_TOTAL'] = 0
-
-
+        # Get species distributions
+        profileData['CBD_TOTAL'] = profileData[biomassCols].sum(axis=1)
         for col in biomassCols:
             # Get species composition percentage for each height bin
             profileData[col] = (profileData[col] / profileData['CBD_TOTAL'])
             # Forward fill percentages for nan or inf bins resulting from divide by zero error
             profileData.loc[~np.isfinite(profileData[col]),col] = np.nan
             profileData[col] = profileData[col].ffill()
-            # Multiply feature by species percentage
-            profileData[col] *= profileData[lidarValueCol]
 
         # Get species distribution profile for each class
         speciesDist = profileData[[classIdCol,heightCol]+biomassCols].groupby([classIdCol,heightCol]).sum()
@@ -943,8 +930,23 @@ class CanopyBulkDensityModel:
             speciesDist[col]=speciesDist[col] / speciesDistSum
 
         self.species_profiles = {}
-        for classId in profileData[classIdCol].unique():
+        for classId in speciesDist.index.get_level_values(0).unique():
             self.species_profiles[classId] = speciesDist.loc[classId, :].reset_index().ffill()
+
+        # Smooth profiles (individually for each plot)
+        for plot in profileData[plotIdCol].unique():
+            profileDataFilter = profileData[(profileData[plotIdCol] == plot)].copy()
+            profileDataFilter[lidarValueCol] = smooth(profileDataFilter[lidarValueCol], sigma=self.sigma).clip(min=0)
+            profileDataFilter['CBD_TOTAL'] = smooth(profileDataFilter['CBD_TOTAL'], sigma=0).clip(min=0)
+            profiles_list.append(profileDataFilter)
+
+        profileData = pd.concat(profiles_list)
+        profileData = profileData[profileData[heightCol]>=minHeight]
+        profileData.loc[profileData['CBD_TOTAL']<.00001, 'CBD_TOTAL'] = 0
+
+        # Multiply feature by species percentage
+        for col in biomassCols:
+            profileData[col] *= profileData[lidarValueCol]
 
 
         # Use linear modelling to get feature:biomass coefficient for each species
@@ -955,25 +957,34 @@ class CanopyBulkDensityModel:
             loo_results = []
             for plot_id_test in profileData[plotIdCol].unique():
                 if fitIntercept:
-                    import sklearn.linear_model as sklm
-                    lm = smf.mixedlm(formula='CBD_TOTAL ~ ' + '+'.join(biomassCols),
-                                     data=profileData, groups=profileData[plotIdCol],
-                                     re_formula="0+" + lidarValueCol).fit_regularized(alpha=alpha,method='l1')#,start_params=np.ones(len(biomassCols),dtype=float))
-                    #lm = smf.ols(formula='CBD_TOTAL ~ ' + '+'.join(biomassCols), data=profileData[profileData[plotIdCol]!=plot_id_test]).fit_regularized(alpha=alpha, L1_wt=0)
-                    self.intercept = lm.params.iloc[0]
-                    self.mass_ratio = dict(zip(biomassCols,lm.params.iloc[1:len(biomassCols) + 1]))
+                    if mixed_effects:
+                        lm = smf.mixedlm(formula='CBD_TOTAL ~ ' + '+'.join(biomassCols),
+                                         data=profileData, groups=profileData[plotIdCol],
+                                         re_formula="0+" + lidarValueCol).fit_regularized(alpha=alpha,method='l1')#,start_params=np.ones(len(biomassCols),dtype=float))
+                        #lm = smf.ols(formula='CBD_TOTAL ~ ' + '+'.join(biomassCols), data=profileData[profileData[plotIdCol]!=plot_id_test]).fit_regularized(alpha=alpha, L1_wt=0)
+                        self.intercept = lm.params.iloc[0]
+                        self.mass_ratio = dict(zip(biomassCols,lm.params.iloc[1:len(biomassCols) + 1]))
+                    else:
+                        lm = smf.ols(formula='CBD_TOTAL ~ ' + '+'.join(biomassCols), data=profileData[profileData[plotIdCol]!=plot_id_test]).fit_regularized(alpha=alpha, L1_wt=0)
+                        self.intercept = lm.params.iloc[0]
+                        self.mass_ratio = dict(zip(biomassCols,lm.params[1:len(biomassCols) + 1]))
 
                     #lm = sklm.Ridge(alpha=alpha,positive=True).fit(profileData[biomassCols], profileData['CBD_TOTAL'])
                     #self.intercept = lm.intercept_
                     #self.mass_ratio = dict(zip(biomassCols, lm.coef_[:len(biomassCols)]))
 
                 else:
-                    lm = smf.mixedlm(formula='CBD_TOTAL ~ ' + '+'.join(biomassCols)+'-1',
-                                     data=profileData, groups=profileData[plotIdCol],
-                                     re_formula="0+" + lidarValueCol).fit_regularized(alpha=alpha,method='l1')
-                    #lm = smf.ols(formula='CBD_TOTAL ~ -1+' + '+'.join(biomassCols), data=profileData[profileData[plotIdCol]!=plot_id_test]).fit_regularized(alpha=alpha, L1_wt=0)
-                    self.intercept = 0
-                    self.mass_ratio = dict(zip(biomassCols,lm.params.iloc[:len(biomassCols)]))
+                    if mixed_effects:
+                        lm = smf.mixedlm(formula='CBD_TOTAL ~ ' + '+'.join(biomassCols)+'-1',
+                                         data=profileData, groups=profileData[plotIdCol],
+                                         re_formula="0+" + lidarValueCol).fit_regularized(alpha=alpha,method='l1')
+                        #lm = smf.ols(formula='CBD_TOTAL ~ -1+' + '+'.join(biomassCols), data=profileData[profileData[plotIdCol]!=plot_id_test]).fit_regularized(alpha=alpha, L1_wt=0)
+                        self.intercept = 0
+                        self.mass_ratio = dict(zip(biomassCols,lm.params.iloc[:len(biomassCols)]))
+                    else:
+                        lm = smf.ols(formula='CBD_TOTAL ~ -1+' + '+'.join(biomassCols), data=profileData[profileData[plotIdCol]!=plot_id_test]).fit_regularized(alpha=alpha, L1_wt=0)
+                        self.intercept = 0
+                        self.mass_ratio = dict(zip(biomassCols, lm.params[:len(biomassCols)]))
 
                 predicted = self.predict(lidarProfile=profileData[profileData[plotIdCol]==plot_id_test], lidarValueCol=lidarValueCol, heightCol=heightCol,
                                          classIdCol=classIdCol, resultCol='cbd_pred')
@@ -1018,7 +1029,7 @@ class CanopyBulkDensityModel:
         for plotId in lidarProfile[plotIdCol].unique():
             df_filter = lidarProfile[lidarProfile[plotIdCol]==plotId].copy()
             classId = df_filter[classIdCol].iloc[0]
-            df_filter[lidarValueCol] = smooth(df_filter[lidarValueCol],self.sigma)
+            df_filter[lidarValueCol] = smooth(df_filter[lidarValueCol],self.sigma).clip(min=0)
             df_filter = df_filter.drop(columns=self.mass_ratio.keys(), errors='ignore')
             df_filter = df_filter.merge(self.species_profiles[classId], left_on=heightCol, right_on=self.height_col, how='left').ffill()
             result = pd.Series(np.zeros(df_filter.shape[0],np.float64))
@@ -1039,9 +1050,9 @@ class CanopyBulkDensityModel:
         for plotId in lidarProfile[plotIdCol].unique():
             df_filter = lidarProfile[lidarProfile[plotIdCol]==plotId].copy()
             classId = df_filter[classIdCol].iloc[0]
-            df_filter[lidarValueCol] = smooth(df_filter[lidarValueCol],self.sigma)
+            df_filter[lidarValueCol] = smooth(df_filter[lidarValueCol],self.sigma).clip(min=0)
             df_filter['CBD_TOTAL'] = df_filter[biomassCols].sum(axis=1)
-            df_filter['CBD_TOTAL'] = smooth(df_filter['CBD_TOTAL'], self.sigma)
+            df_filter['CBD_TOTAL'] = smooth(df_filter['CBD_TOTAL'], 0).clip(min=0)
             df_filter = df_filter.drop(columns=self.mass_ratio.keys(), errors='ignore')
             df_filter = df_filter.merge(self.species_profiles[classId], left_on=heightCol, right_on=self.height_col, how='left').ffill()
             result = pd.Series(np.zeros(df_filter.shape[0],np.float64))
