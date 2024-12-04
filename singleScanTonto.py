@@ -1,4 +1,5 @@
 #%%#####################################################################################################################
+import matplotlib
 import pandas as pd
 import time
 import numpy as np
@@ -34,7 +35,7 @@ leave_one_out = False # True: Use leave-one-out cross validation. False: Use k-f
 nfolds = 10 # Number of folds used in k-fold cross validation. Set to 1 to train with all data (can't test).
 bootstrap_confidence_intervals = False
 generate_test_figure = False # Show figure from individual random plot.
-generate_figures = False # Generate figures for all plots
+generate_figures = True # Generate figures for all plots
 variance_stats = False # Generate stats for effects of terrain, occlusion, height
 
 #%%#####################################################################################################################
@@ -491,7 +492,13 @@ if generate_figures:
         ax1.set_ylim([0, ymax])
         ax2.set_ylim([0, ymax])
         ax2.set_yticks(ax1.get_yticks())
-        ax2.xaxis.set_major_locator(plt.MultipleLocator(.01))
+        max_x_lim = ax2.get_xlim()[1]
+        if max_x_lim <= .06:
+            ax2.xaxis.set_major_locator(plt.MultipleLocator(.01))
+        elif max_x_lim <= .12:
+            ax2.xaxis.set_major_locator(plt.MultipleLocator(.02))
+        else:
+            ax2.xaxis.set_major_locator(plt.MultipleLocator(.05))
         ax2.legend()
         ax1.set_title(plotname)
         ax1.set_ylabel('Height (m)')
