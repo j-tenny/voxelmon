@@ -952,16 +952,14 @@ class CanopyBulkDensityModel:
         cv_test[1:,0] = np.logspace(-4, 1, 19)
         for i in range(20):
             alpha = cv_test[i,0]
-            k = np.repeat([0,1,2], profileData.shape[0]//3+1)[:profileData.shape[0]]
-            np.random.shuffle(k)
-            profileData['k'] = k
-            for k in range(3):
+            loo_results = []
+            for plot_id_test in profileData[plotIdCol].unique():
                 if fitIntercept:
                     import sklearn.linear_model as sklm
                     #lm = smf.mixedlm(formula='CBD_TOTAL ~ ' + '+'.join(biomassCols),
                     #                 data=profileData, groups=profileData[plotIdCol],
                     #                 re_formula="0+" + lidarValueCol).fit_regularized(alpha=alpha,method='l1')#,start_params=np.ones(len(biomassCols),dtype=float))
-                    lm = smf.ols(formula='CBD_TOTAL ~ ' + '+'.join(biomassCols), data=profileData[profileData['k']!=k]).fit_regularized(alpha=alpha, L1_wt=0)
+                    lm = smf.ols(formula='CBD_TOTAL ~ ' + '+'.join(biomassCols), data=profileData[profileData[plotIdCol]!=plot_id_test]).fit_regularized(alpha=alpha, L1_wt=0)
                     self.intercept = lm.params[0]
                     self.mass_ratio = dict(zip(biomassCols,lm.params[1:len(biomassCols) + 1]))
 
@@ -973,16 +971,17 @@ class CanopyBulkDensityModel:
                     #lm = smf.mixedlm(formula='CBD_TOTAL ~ ' + '+'.join(biomassCols)+'-1',
                     #                 data=profileData, groups=profileData[plotIdCol],
                     #                 re_formula="0+" + lidarValueCol).fit()
-                    lm = smf.ols(formula='CBD_TOTAL ~ -1+' + '+'.join(biomassCols), data=profileData).fit_regularized(alpha=alpha, L1_wt=0)
+                    lm = smf.ols(formula='CBD_TOTAL ~ -1+' + '+'.join(biomassCols), data=profileData[profileData[plotIdCol]!=plot_id_test]).fit_regularized(alpha=alpha, L1_wt=0)
                     self.intercept = 0
                     self.mass_ratio = dict(zip(biomassCols,lm.params[:len(biomassCols)]))
 
-                predicted = self.predict(lidarProfile=profileData[profileData['k']==k], lidarValueCol=lidarValueCol, heightCol=heightCol,
+                predicted = self.predict(lidarProfile=profileData[profileData[plotIdCol]==plot_id_test], lidarValueCol=lidarValueCol, heightCol=heightCol,
                                          classIdCol=classIdCol, resultCol='cbd_pred')
-                predicted_plot = predicted.pivot_table(values=['CBD_TOTAL', 'cbd_pred'], index=plotIdCol, aggfunc='sum')
-                lm2 = smf.ols('CBD_TOTAL~cbd_pred-1', predicted_plot).fit()
-                running_mse_temp = np.mean(lm2.resid**2)
-            cv_test[i,1] = running_mse_temp / 3
+                predicted_plot = predicted.pivot_table(values=['CBD_TOTAL', 'cbd_pred'], index=plotIdCol, aggfunc='max')
+                loo_results.append(predicted)
+            loo_results = pd.concat(loo_results)
+            lm2 = smf.ols('CBD_TOTAL~cbd_pred-1', loo_results).fit()
+            cv_test[i,1] = np.mean(lm2.resid**2)
 
         self.alpha = cv_test[np.argmin(cv_test[:, 1]), 0]
 
@@ -990,14 +989,14 @@ class CanopyBulkDensityModel:
             #lm = smf.mixedlm(formula='CBD_TOTAL ~ ' + '+'.join(biomassCols),
             #                 data=profileData, groups=profileData[plotIdCol],
             #                 re_formula="0+" + lidarValueCol).fit_regularized(alpha=self.alpha,method='l1')#,start_params=np.ones(len(biomassCols),dtype=float))
-            lm = smf.ols(formula='CBD_TOTAL ~ ' + '+'.join(biomassCols),data=profileData).fit_regularized(alpha=alpha,L1_wt=0)
+            lm = smf.ols(formula='CBD_TOTAL ~ ' + '+'.join(biomassCols),data=profileData).fit_regularized(alpha=self.alpha,L1_wt=0)
             self.intercept = lm.params[0]
             self.mass_ratio = dict(zip(biomassCols, lm.params[1:len(biomassCols) + 1]))
         else:
             #lm = smf.mixedlm(formula='CBD_TOTAL ~ ' + '+'.join(biomassCols) + '-1',
             #                 data=profileData, groups=profileData[plotIdCol],
             #                 re_formula="0+" + lidarValueCol).fit_regularized(alpha=self.alpha,method='l1')
-            lm = smf.ols(formula='CBD_TOTAL ~ -1 +' + '+'.join(biomassCols), data=profileData).fit_regularized(alpha=alpha,L1_wt=0)
+            lm = smf.ols(formula='CBD_TOTAL ~ -1 +' + '+'.join(biomassCols), data=profileData).fit_regularized(alpha=self.alpha,L1_wt=0)
             self.intercept = 0
             self.mass_ratio = dict(zip(biomassCols,lm.params[:len(biomassCols)]))
 

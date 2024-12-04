@@ -223,8 +223,8 @@ outliers = ['T1423071101']
 df_all = df_all[~(df_all['Plot_ID'].isin(outliers))]
 
 # Transform pad data
-lm = smf.ols('TOTAL~pad',df_all).fit()
-df_all['pad'] -= lm.params.iloc[0]/2
+#lm = smf.ols('TOTAL~pad',df_all).fit()
+#df_all['pad'] -= lm.params.iloc[0]/2
 
 # Train model
 results = []
