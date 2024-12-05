@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import math
 import statsmodels.formula.api as smf
-from voxelmon import PtxBlk360G1, CanopyBulkDensityModel, get_files_list, plot_side_view
+from voxelmon import PtxBlk360G1, BulkDensityProfileModel, get_files_list, plot_side_view
 
 ########################################################################################################################
 
@@ -227,6 +227,7 @@ df_all = df_all[~(df_all['Plot_ID'].isin(outliers))]
 #lm = smf.ols('TOTAL~pad',df_all).fit()
 #df_all['pad'] -= lm.params.iloc[0]/2
 
+
 # Train model
 results = []
 if by_veg_type:
@@ -251,14 +252,14 @@ if by_veg_type:
             train_data = df_class[(df_class['Plot_ID'].isin(train_plots))]
             test_data = df_class[(df_class['Plot_ID'].isin(test_plots))]
             # Train model on training set
-            model = CanopyBulkDensityModel()
+            model = BulkDensityProfileModel()
             model.fit(train_data, biomassCols=biomass_classes, sigma=sigma, plotIdCol='Plot_ID',
                       lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=False, twoStageFit=True)
             # Get predictions for test set
             pred = model.predict_and_test(test_data, biomassCols=biomass_classes, lidarValueCol=feature, classIdCol='CLASS', resultCol='biomassPred')
             results.append(pred)
         # Train and save final model based on all training data
-        model = CanopyBulkDensityModel()
+        model = BulkDensityProfileModel()
         model.fit(df_class, biomassCols=biomass_classes, sigma=sigma, plotIdCol='Plot_ID',
                   lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=False, twoStageFit=True)
         model.to_file(classId+'.model')
@@ -285,14 +286,14 @@ else:
         train_data = df_class[(df_class['Plot_ID'].isin(train_plots))]
         test_data = df_class[(df_class['Plot_ID'].isin(test_plots))]
         # Train model on training set
-        model = CanopyBulkDensityModel()
+        model = BulkDensityProfileModel()
         model.fit(train_data, biomassCols=biomass_classes, sigma=sigma, plotIdCol='Plot_ID',
                   lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=False, twoStageFit=True)
         # Get predictions for test set
         pred = model.predict_and_test(test_data, biomassCols=biomass_classes, lidarValueCol=feature, classIdCol='CLASS', resultCol='biomassPred')
         results.append(pred)
     # Train and save final model based on all training data
-    model = CanopyBulkDensityModel()
+    model = BulkDensityProfileModel()
     model.fit(df_class, biomassCols=biomass_classes, sigma=sigma, plotIdCol='Plot_ID',
               lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=False, twoStageFit=True)
     model.to_file('combined.model')
@@ -415,7 +416,7 @@ if bootstrap_confidence_intervals:
                 # Filter to this vegetation type
                 df_class = resampled_df[resampled_df['CLASS'] == classId]
                 # Train and save final model based on all training data
-                model = CanopyBulkDensityModel()
+                model = BulkDensityProfileModel()
                 model.fit(df_class, biomassCols=biomass_classes, sigma=sigma, plotIdCol='Plot_ID',
                           lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=True, twoStageFit=True)
                 coef = model.mass_ratio
@@ -425,7 +426,7 @@ if bootstrap_confidence_intervals:
         else:
             # Calculate effective leaf mass per area combining data from all vegetation types
             # Train and save final model based on all training data
-            model = CanopyBulkDensityModel()
+            model = BulkDensityProfileModel()
             model.fit(resampled_df, biomassCols=biomass_classes, sigma=sigma, plotIdCol='Plot_ID',
                       lidarValueCol=feature, minHeight=1, classIdCol='CLASS', fitIntercept=True, twoStageFit=True)
             coef_all.append(model.mass_ratio)

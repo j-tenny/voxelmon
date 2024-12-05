@@ -3,7 +3,6 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import statsmodels.formula.api as smf
 import numpy as np
-from sklearn import linear_model
 import voxelmon
 
 singleScanDir = 'D:\\DataWork\\pypadResults\\PAD_Summary'

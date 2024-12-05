@@ -3,7 +3,7 @@ import time
 import numpy as np
 from pathlib import Path
 import pickle
-from voxelmon import PtxBlk360G1_Group,CanopyBulkDensityModel,get_files_list,plot_side_view,smooth
+from voxelmon import PtxBlk360G1_Group,BulkDensityProfileModel,get_files_list,plot_side_view,smooth
 import statsmodels.formula.api as smf
 import seaborn as sns
 
@@ -195,7 +195,7 @@ if by_veg_type:
             test_plots = plots.loc[plots['k'] == k,0]
             train_data = df_class[(df_class['Plot_ID'].isin(train_plots))]
             test_data = df_class[(df_class['Plot_ID'].isin(test_plots))]
-            model = CanopyBulkDensityModel()
+            model = BulkDensityProfileModel()
             model.fit(train_data, train_data, biomassCols=biomass_classes, cellSize=cell_size, sigma=sigma, lidarValueCol=feature)
             pred = model.predict(test_data, lidarValueCol=feature)
             results.append(pred)
@@ -216,7 +216,7 @@ else:
         test_plots = plots.loc[plots['k'] == k, 0]
         train_data = df_class[(df_class['Plot_ID'].isin(train_plots))]
         test_data = df_class[(df_class['Plot_ID'].isin(test_plots))]
-        model = CanopyBulkDensityModel()
+        model = BulkDensityProfileModel()
         model.fit(lidarProfile = train_data, biomassProfile=train_data, biomassCols=biomass_classes, cellSize=cell_size, sigma=sigma,
                   lidarValueCol=feature, fitIntercept=True, twoStageFit=True)
         pred = model.predict(test_data, lidarValueCol=feature)

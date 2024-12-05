@@ -8,7 +8,7 @@ import warnings
 import matplotlib.pyplot as plt
 
 import voxelmon.utils
-from voxelmon import Grid,Pulses,PtxBlk360G1,get_files_list,plot_side_view, CanopyBulkDensityModel
+from voxelmon import Grid,Pulses,PtxBlk360G1,get_files_list,plot_side_view, BulkDensityProfileModel
 import pyrothermel
 
 
@@ -27,7 +27,7 @@ canopyModelPath = 'combined.model'
 process = False
 generateFigures = True
 
-canopyModel = CanopyBulkDensityModel.from_file(canopyModelPath)
+canopyModel = BulkDensityProfileModel.from_file(canopyModelPath)
 field_summary = pd.read_csv(Path(inputFolder).joinpath(field_summary_name),index_col='EVENT_ID')
 
 files = get_files_list(inputFolder, keyword, recursive=False)
