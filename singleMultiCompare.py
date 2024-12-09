@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import statsmodels.formula.api as smf
 import numpy as np
 import voxelmon
+from sklearn import linear_model
 
 singleScanDir = 'D:\\DataWork\\pypadResults\\PAD_Summary'
 singleScanDemDir = 'D:\\DataWork\\pypadResults\\DEM'
@@ -40,7 +41,7 @@ for i in range(len(singleScanFiles)):
     dem_multi = dem_multi[~np.isnan(dem_multi['z'])]
 
     # Fit a plane using linear regression
-    model = linear_model.LinearRegression().fit(dem_multi[['x', 'y']], dem_multi['z'])
+    model = linear_model.LinearRegression().fit_bayesian(dem_multi[['x', 'y']], dem_multi['z'])
 
     # Extract coefficients
     intercept = model.intercept_
@@ -142,7 +143,7 @@ plt.show()
 
 print('Per bin with refit')
 score(df_all['padMulti'],df_all['padSingle'],refit=True)
-lm = smf.ols('padMulti~padSingle',df_all).fit()
+lm = smf.ols('padMulti~padSingle',df_all).fit_bayesian()
 print(lm.profile())
 
 f,[ax1,ax2] = plt.subplots(ncols=2, figsize = [7,4])
@@ -167,7 +168,7 @@ print('Per plot with refit')
 score(df_all_plot['paiMulti'],df_all_plot['paiSingle'],refit=True)
 
 
-lm2 = smf.ols('paiMulti~paiSingle',df_all_plot).fit()
+lm2 = smf.ols('paiMulti~paiSingle',df_all_plot).fit_bayesian()
 print(lm2.profile())
 sns.scatterplot(df_all_plot,x='paiSingle',y='paiMulti',hue='class',palette=['orange','green','blue'],ax=ax2)
 ax2.axline((0,lm2.params['Intercept']),slope=lm2.params['paiSingle'],color='black')

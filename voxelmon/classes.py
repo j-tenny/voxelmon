@@ -1,6 +1,7 @@
 import numpy as np
+import pandas as pd
 from numba import jit,njit,guvectorize,prange,float32,void,uint16,int64,uint32,int32,float64
-import time
+from typing import Union
 
 import voxelmon
 
@@ -885,87 +886,298 @@ class PtxBlk360G1_Group:
 
 
 class BulkDensityProfileModel:
-    def __init__(self):
-        self.mass_ratio_profile = None
+    def __init__(self, mass_ratio_profile:Union[np.array, None]=None, intercept:float=0, smoothing_factor:float=0.0):
+        """
+        Initialize object from mass ratio profile or initialize empty object
+        Args:
+            mass_ratio_profile: Leave None to initialize empty. Otherwise, must be array with two columns.
+                First column must contain height in meters. Second column must contain mass ratio values.
+                Height must be monotonically increasing (must represent an individual profile).
+            intercept: model intercept
+            smoothing_factor: Value used by voxelmon.utils.smooth() to smooth lidar values before prediction.
+        """
+
+        if mass_ratio_profile is not None:
+            if mass_ratio_profile.shape[1] != 2:
+                raise ValueError('mass_ratio_profile must be array with 2 columns (height and mass ratio value).')
+            self.mass_ratio_profile = mass_ratio_profile
+            self.update_interpolator()
+        else:
+            self.mass_ratio_profile = None
+
+        self.smoothing_factor = smoothing_factor
+        self.intercept = intercept
 
     @classmethod
     def from_file(cls, filepath):
+        """
+        Read all model information from a binary file produced by BulkDensityProfileModel.to_file()
+        """
+
         import pickle
         with open(filepath, 'rb') as f:
             obj = pickle.load(f)
         return obj
 
     @classmethod
-    def fit(cls, profileData, lidarValueCol, biomassCols, classIdCol='class', plotIdCol='Plot_ID', heightCol='height', sigma=1.2, minHeight=1, fitIntercept=False,twoStageFit=False):
-        model = BulkDensityProfileModel().fit(profileData=profileData, lidarValueCol=lidarValueCol, biomassCols=biomassCols,
-                                              sigma=sigma, minHeight=minHeight, fitIntercept=fitIntercept,
-                                              twoStageFit=twoStageFit, plotIdCol=plotIdCol, heightCol=heightCol, classIdCol=classIdCol)
+    def from_species_data(cls,
+                         profile_data:pd.DataFrame,
+                         species_cols:list[str],
+                         height_col:str,
+                         mass_ratio_dict:dict[float],
+                         intercept:float=0,
+                         smoothing_factor:float=0.0):
+        """
+        Initialize model given species proportions and mass ratio by species
+        Args:
+            profile_data: Dataframe containing species proportions at various heights along a **single** profile.
+            species_cols: List of species group names. Each name must appear as separate column in table. Column values
+                must represent species proportion of CBD. Sum of species proportions must be equal to 1.
+            height_col: Name of column containing height in meters.
+            mass_ratio_dict: Dictionary containing mass:lidar value ratio. Each col in species_cols must be key in dict.
+            intercept: model intercept
+            smoothing_factor: Value used by voxelmon.utils.smooth() to smooth lidar values before prediction.
+
+        Returns: BulkDensityProfileModel
+        """
+        model =  cls()
+        model.calculate_mass_ratio_profile(profile_data, species_cols,
+                                          height_col, mass_ratio_dict,
+                                          intercept, smoothing_factor)
         return model
 
-    def fit(self, profileData, lidarValueCol, biomassCols, classIdCol='class', plotIdCol='Plot_ID', heightCol='height', sigma=1.2, minHeight=1, fitIntercept=False,twoStageFit=False):
-        from voxelmon import smooth
+    @classmethod
+    def from_csv(cls, filepath, smoothing_factor=0):
+        """Initialize model from templated CSV containing species proportions and mass ratio by species
+
+        CSV must be formatted as follows:
+        Row 0, col 0: intercept term
+        Additional columns in row 0: mass ratio values for each species in model
+        Row 1: Headers
+        Col 0, additional rows: Bin height in meters
+        Additional rows and columns: Proportion of CBD for this species and height
+        """
+
+        import numpy as np
         import pandas as pd
+        params = pd.read_csv(filepath,header=None,nrows=1,index_col=None).to_numpy().flatten()
+        df = pd.read_csv(filepath,skiprows=1,index_col=None)
+        if len(params) != len(df.columns):
+            raise ValueError('n_columns in row 0 did not match n_columns in table')
+
+        if ~np.isfinite(params[0]):
+            intercept = params[0]
+        else:
+            intercept = 0
+        mass_ratio_dict = dict(zip(df.columns[1:], params[1:]))
+        height_col = df.columns[0]
+        model = cls().calculate_mass_ratio_profile(df, df.columns[1:], height_col,
+                                                   mass_ratio_dict, intercept, smoothing_factor)
+        return model
+
+
+    def update_interpolator(self):
+        """Must update interpolator if self.mass_ratio_profile is modified"""
+        from scipy import interpolate
+        self.interpolator = interpolate.interp1d(x=self.mass_ratio_profile[:, 0],
+                                                 y=self.mass_ratio_profile[:, 1],
+                                                 bounds_error=False,
+                                                 fill_value=(self.mass_ratio_profile[1, 0],
+                                                             self.mass_ratio_profile[1, -1]),
+                                                 assume_sorted=True)
+
+    def calculate_mass_ratio_profile(self,
+                                     profile_data:pd.DataFrame,
+                                     species_cols:list[str],
+                                     height_col:str,
+                                     mass_ratio_dict:dict[float],
+                                     intercept:float=0,
+                                     smoothing_factor:float=0.0):
+        """
+        Calculate mass ratio profile given species proportions and mass ratio by species
+        Args:
+            profile_data: Dataframe containing species proportions at various heights along a **single** profile.
+            species_cols: List of species group names. Each name must appear as separate column in table. Column values
+                must represent species proportion of CBD. Sum of species proportions must be equal to 1.
+            height_col: Name of column containing height in meters.
+            mass_ratio_dict: Dictionary containing mass:lidar value ratio. Each col in species_cols must be key in dict.
+            intercept: model intercept
+            smoothing_factor: Value used by voxelmon.utils.smooth() to smooth lidar values before prediction.
+
+        Returns:
+
+        """
+
+        self.mass_ratio_profile = np.zeros([profile_data.shape[0],2], np.float64)
+        self.mass_ratio_profile[:,0] = profile_data[height_col]
+        for species in species_cols:
+            self.mass_ratio_profile[:,1] += profile_data[species] * mass_ratio_dict[species]
+        self.intercept = intercept
+        self.smoothing_factor = smoothing_factor
+        self.update_interpolator()
+
+        #TODO: Validate input data
+
+    def predict(self,
+                profile_data:pd.DataFrame,
+                height_col:str,
+                lidar_value_col:str,
+                plot_id_col: str | None) -> np.ndarray:
+        """
+        Predict canopy bulk density profile given new lidar profile
+        Args:
+            profile_data: dataframe containing new data
+            height_col: name of column containing height in meters
+            lidar_value_col: name of column containing lidar values
+            plot_id_col: name of column containing plot IDs. If None, assumes that there is only one profile.
+            result_col: name of column to store results
+
+        Returns: np.ndarray containing input data and prediction results.
+
+        """
+        from voxelmon import smooth
+
+        if plot_id_col is not None:
+            results = []
+            # Filter to each plot and process independently
+            for plot_id in profile_data[plot_id_col].unique():
+                # Filter to plot
+                df_filter = profile_data[profile_data[plot_id_col] == plot_id]
+                # Smooth lidar values
+                lidar_vals = smooth(df_filter[lidar_value_col], self.smoothing_factor).clip(min=0)
+                # Interpolate mass ratio profile to match new heights
+                mass_ratio_profile = self.interpolator(df_filter[height_col])
+                results.append(lidar_vals * mass_ratio_profile)
+            results = np.concatenate(results)
+        else:
+            # Smooth lidar values
+            lidar_vals = smooth(profile_data[lidar_value_col], self.smoothing_factor).clip(min=0)
+            # Interpolate mass ratio profile to match new heights
+            mass_ratio_profile = self.interpolator(profile_data[height_col])
+            results = lidar_vals * mass_ratio_profile
+
+        return results
+
+    def to_file(self,filepath):
+        """
+        Save all model information to a binary file.
+        """
+
+        import pickle
+        with open(filepath, 'wb') as f:
+            pickle.dump(self, f)
+
+
+class BulkDensityProfileModelFitter:
+    def __init__(self,
+                 profile_data: pd.DataFrame,
+                 species_cols: list[str],
+                 lidar_value_col: str,
+                 cbd_col:str,
+                 height_col: str,
+                 plot_id_col: str,
+                 class_id_col: str,
+                 smoothing_factor: float = 0.0,
+                 min_height: float = 1.0):
+        """
+        Initialize model fitter by providing profile data and column mapping
+        Args:
+            profile_data: Table containing estimates of CBD, species proportions, and lidar value
+            species_cols: List of species group names. Each name must appear as separate column in table. Column values
+                must represent species proportion of CBD. Sum of species proportions must be equal to 1.
+            lidar_value_col: Name of column containing lidar values to be used in prediction (e.g. 'pad' or 'foliage')
+            cbd_col: Name of column containing canopy bulk density values
+            height_col: Name of column containing height labels. Heights must be in meters.
+            plot_id_col: Name of column containing plot IDs. Plot IDs must separate individual profiles.
+            class_id_col: Name of column containing class IDs. Data from all classes will be used to estimate mass
+                ratio by species but species composition will be calculated separately for each class.
+            smoothing_factor: Value used by voxelmon.utils.smooth() to smooth each profile's CBD and lidar values
+            min_height: Minimum height considered in model fitting and prediction
+        """
+
+        self.species_cols = species_cols
+        self.lidar_value_col = lidar_value_col
+        self.cbd_col = cbd_col
+        self.height_col = height_col
+        self.plot_id_col = plot_id_col
+        self.class_id_col = class_id_col
+        self.smoothing_factor = smoothing_factor
+        self.min_height = min_height
+        self.mass_ratio_dict = None
+        self.species_profiles = None
+
+        # Smooth profiles (individually for each plot)
+        from voxelmon import smooth
+        profiles_list = []
+        for plot in profile_data[plot_id_col].unique():
+            profile_data_tmp = profile_data[(profile_data[plot_id_col] == plot)].copy()
+            profile_data_tmp[lidar_value_col] = smooth(profile_data_tmp[lidar_value_col],
+                                                       smoothing_factor=smoothing_factor).clip(min=0)
+            profile_data_tmp[cbd_col] = smooth(profile_data_tmp[cbd_col], smoothing_factor=smoothing_factor).clip(min=0)
+            profiles_list.append(profile_data_tmp)
+
+        profile_data = pd.concat(profiles_list)
+        profile_data = profile_data[profile_data[height_col] >= min_height]
+        profile_data.loc[profile_data[cbd_col] < .00001, cbd_col] = 0
+        self.profile_data = profile_data
+        self.summarize_species_profiles()
+
+        #TODO: Move additional preprocessing steps here
+
+        #TODO: validate input data
+
+    @classmethod
+    def from_file(cls, filepath):
+        """
+        Read all model information from a binary file produced by BulkDensityProfileModelFitter.to_file()
+        """
+
+        import pickle
+        with open(filepath, 'rb') as f:
+            obj = pickle.load(f)
+        return obj
+
+    def fit_mass_ratio_bayesian(self,
+                                 prior_mean: np.ndarray,
+                                 prior_std: np.ndarray,
+                                 sigma_residuals:float = .02,
+                                 sigma_intercept:float = .005,
+                                 fit_intercept: bool = False,
+                                 two_stage_fit: bool = False):
+        """
+        Fit self with Bayesian linear regression using prior coefficients and new observations
+
+        Args:
+            prior_mean: Prior estimates of the mass:lidar value coefficients (e.g. LMA estimates from previous studies).
+            prior_std: Estimated standard deviation for prior coefficients. If uncertain, use large value
+                representing weakly informative prior.
+            fit_intercept: Use intercept in CBD prediction equation.
+            two_stage_fit: Adjust mass ratio values to reduce bias in total canopy fuel load predictions
+
+        Returns: None
+        """
         import pymc as pm
         import arviz as az
 
-        self.height_col = heightCol
-        self.sigma = sigma
-        self.feature = lidarValueCol
+        # Get species proportions
+        X = self.profile_data[self.species_cols].to_numpy()
 
-        profiles_list = []
-        profileData = profileData.copy()
+        # Scale lidar value by species proportions
+        X *= self.profile_data[self.lidar_value_col].to_numpy().reshape(-1,1)
 
-        # Get species distributions
-        profileData['CBD_TOTAL'] = profileData[biomassCols].sum(axis=1)
-        for col in biomassCols:
-            # Get species composition percentage for each height bin
-            profileData[col] = (profileData[col] / profileData['CBD_TOTAL'])
-            # Forward fill percentages for nan or inf bins resulting from divide by zero error
-            profileData.loc[~np.isfinite(profileData[col]),col] = np.nan
-            profileData[col] = profileData[col].ffill()
-
-        # Get species distribution profile for each class
-        speciesDist = profileData[[classIdCol,heightCol]+biomassCols].groupby([classIdCol,heightCol]).sum()
-        speciesDistSum = speciesDist.sum(axis=1)
-        for col in speciesDist.columns:
-            speciesDist[col]=speciesDist[col] / speciesDistSum
-
-        self.species_profiles = {}
-        for classId in speciesDist.index.get_level_values(0).unique():
-            self.species_profiles[classId] = speciesDist.loc[classId, :].reset_index().ffill()
-
-        # Smooth profiles (individually for each plot)
-        for plot in profileData[plotIdCol].unique():
-            profileDataFilter = profileData[(profileData[plotIdCol] == plot)].copy()
-            profileDataFilter[lidarValueCol] = smooth(profileDataFilter[lidarValueCol], sigma=self.sigma).clip(min=0)
-            profileDataFilter['CBD_TOTAL'] = smooth(profileDataFilter['CBD_TOTAL'], sigma=0).clip(min=0)
-            profiles_list.append(profileDataFilter)
-
-        profileData = pd.concat(profiles_list)
-        profileData = profileData[profileData[heightCol]>=minHeight]
-        profileData.loc[profileData['CBD_TOTAL']<.00001, 'CBD_TOTAL'] = 0
-
-        # Multiply feature by species percentage
-        for col in biomassCols:
-            profileData[col] *= profileData[lidarValueCol]
-
-        X = profileData[['OS','ARPU','OT','JUNIPER','PINE']]
-        y = profileData['CBD_TOTAL']
-
-        # Prior knowledge for the leaf mass per area in order of X
-        prior_means = np.array([.14,.28,.14,.49,.333])
-        prior_stds = prior_means * .05
+        y = self.profile_data[self.cbd_col].to_numpy()
 
         with pm.Model() as model:
             # Priors for coefficients
-            betas = pm.Normal('betas', mu=prior_means, sigma=prior_stds, shape=(X.shape[1],))
+            betas = pm.Normal('betas', mu=prior_mean, sigma=prior_std, shape=(X.shape[1],))
 
             # Assume normal distribution of residuals
-            sigma = pm.HalfNormal('sigma', sigma=.02)
+            #sigma = pm.HalfNormal('sigma', sigma=sigma_residuals)
+            sigma = pm.Normal('sigma', sigma=sigma_residuals)
 
-            if fitIntercept:
+            if fit_intercept:
                 # Prior for the intercept
-                intercept = pm.Normal('intercept', mu=0, sigma=.005)
+                intercept = pm.Normal('intercept', mu=0, sigma=sigma_intercept)
                 Y_obs = pm.Normal('Y_obs', mu=intercept + pm.math.dot(X, betas), sigma=sigma, observed=y)
             else:
                 Y_obs = pm.Normal('Y_obs', mu=pm.math.dot(X, betas), sigma=sigma, observed=y)
@@ -974,72 +1186,91 @@ class BulkDensityProfileModel:
             idata = pm.sample()
 
         # After sampling, you can inspect the posterior samples
-        self.idata = idata
+        self.bayesian_samples = idata
         az.plot_trace(idata, combined=True)
         import matplotlib.pyplot as plt
         plt.show()
         self.fit_summary = az.summary(idata, round_to=2)
-        if fitIntercept:
-            self.fit_summary.index = ['intercept'] + biomassCols + ['sigma']
+        if fit_intercept:
+            self.fit_summary.index = ['intercept'] + self.species_cols + ['sigma']
             self.intercept = self.fit_summary['mean'].iloc[0]
-            self.mass_ratio = dict(zip(biomassCols, self.fit_summary['mean'].iloc[1:len(biomassCols)+1]))
+            self.mass_ratio_dict = dict(zip(self.species_cols, self.fit_summary['mean'].iloc[1:len(self.species_cols) + 1]))
         else:
-            self.fit_summary.index = biomassCols + ['sigma']
+            self.fit_summary.index = self.species_cols + ['sigma']
             self.intercept = 0
-            self.mass_ratio = dict(zip(biomassCols, self.fit_summary['mean'].iloc[:len(biomassCols)]))
-        print(self.fit_summary)
+            self.mass_ratio_dict = dict(zip(self.species_cols, self.fit_summary['mean'].iloc[:len(self.species_cols)]))
+        #print(self.fit_summary)
 
-    def predict(self,lidarProfile,lidarValueCol='pad',heightCol='height',plotIdCol = 'Plot_ID',classIdCol='class',resultCol='cbd_pred'):
-        import pandas as pd
-        from voxelmon import smooth
-        results = []
-        for plotId in lidarProfile[plotIdCol].unique():
-            df_filter = lidarProfile[lidarProfile[plotIdCol]==plotId].copy()
-            classId = df_filter[classIdCol].iloc[0]
-            df_filter[lidarValueCol] = smooth(df_filter[lidarValueCol],self.sigma).clip(min=0)
-            df_filter = df_filter.drop(columns=self.mass_ratio.keys(), errors='ignore')
-            df_filter = df_filter.merge(self.species_profiles[classId], left_on=heightCol, right_on=self.height_col, how='left').ffill()
-            result = pd.Series(np.zeros(df_filter.shape[0],np.float64))
-            result += self.intercept
-            for species in self.mass_ratio.keys():
-                result += df_filter[lidarValueCol] * df_filter[species] * self.mass_ratio[species]
-            df_filter[resultCol] = result
-            results.append(df_filter)
-        results = pd.concat(results)
-        results[resultCol] = results[resultCol].clip(lower=0)
+        if two_stage_fit:
+            import statsmodels.api as sm
+            # Convert plot_id strings to vector of integers
+            _, plot_id_arr = np.unique(self.profile_data[self.plot_id_col], return_inverse=True)
+            # Get predicted cbd of each bin
+            models = self.to_models()
+            y_pred = np.zeros(y.shape, dtype=float)
+            for veg_type in self.profile_data[self.class_id_col].unique():
+                model = models[veg_type]
+                class_mask = self.profile_data[self.class_id_col] == veg_type
+                y_pred[class_mask] = model.predict(self.profile_data[class_mask],
+                                                     self.height_col, self.lidar_value_col, self.plot_id_col)
+            # Get sum of bins in each plot (pred and obs)
+            pred_plot_sum = np.bincount(plot_id_arr, weights=y_pred)
+            obs_plot_sum = np.bincount(plot_id_arr, weights=y)
+            lm = sm.OLS(obs_plot_sum,pred_plot_sum).fit()
+            self.adj_factor = lm.params[0]
+            for species in self.mass_ratio_dict:
+                self.mass_ratio_dict[species] *= self.adj_factor
 
-        return results
 
-    def predict_and_test(self,lidarProfile,biomassCols,lidarValueCol='pad',heightCol='height',plotIdCol = 'Plot_ID',classIdCol='class',resultCol='cbd_pred'):
-        import pandas as pd
-        from voxelmon import smooth
-        results = []
-        for plotId in lidarProfile[plotIdCol].unique():
-            df_filter = lidarProfile[lidarProfile[plotIdCol]==plotId].copy()
-            classId = df_filter[classIdCol].iloc[0]
-            df_filter[lidarValueCol] = smooth(df_filter[lidarValueCol],self.sigma).clip(min=0)
-            df_filter['CBD_TOTAL'] = df_filter[biomassCols].sum(axis=1)
-            df_filter['CBD_TOTAL'] = smooth(df_filter['CBD_TOTAL'], 0).clip(min=0)
-            df_filter = df_filter.drop(columns=self.mass_ratio.keys(), errors='ignore')
-            df_filter = df_filter.merge(self.species_profiles[classId], left_on=heightCol, right_on=self.height_col, how='left').ffill()
-            result = pd.Series(np.zeros(df_filter.shape[0],np.float64))
-            result += self.intercept
-            for species in self.mass_ratio.keys():
-                result += df_filter[lidarValueCol] * df_filter[species] * self.mass_ratio[species]
-            df_filter[resultCol] = result
-            results.append(df_filter)
-        results = pd.concat(results)
-        results[resultCol] = results[resultCol].clip(lower=0)
-        results['RESIDUAL'] = results[resultCol] - results['CBD_TOTAL']
+        #TODO: Standardize outputs
 
-        return results
+        #TODO: Reimplement two-stage fit
 
-    def to_file(self,filepath):
+    def summarize_species_profiles(self):
+        """
+        Summarize species distribution profile for each class
+        Args:
+            profile_data:
+            species_cols:
+            height_col:
+            class_id_col:
+
+        Returns: None. Data is written to self.species_profiles.
+        """
+        # Get species distribution profile for each class
+        species_dist =self.profile_data[[self.class_id_col,self.height_col] + self.species_cols].groupby([self.class_id_col, self.height_col]).sum()
+        speciesDistSum = species_dist.sum(axis=1)
+        for col in species_dist.columns:
+            species_dist[col] = species_dist[col] / speciesDistSum
+
+        self.species_profiles = {}
+        for classId in species_dist.index.get_level_values(0).unique():
+            self.species_profiles[classId] = species_dist.loc[classId, :].reset_index().ffill()
+
+    def to_models(self)->dict[BulkDensityProfileModel]:
+        """Create BulkDensityProfileModel for each class in profile_data"""
+        if self.mass_ratio_dict is None:
+            raise ValueError('Mass ratio dictionary is None. Use fit_mass_ratio_bayesian()')
+        if self.species_profiles is None:
+            raise ValueError('Species profiles dictionary is None. Use summarize_species_profiles()')
+        models = dict()
+        for class_id in self.species_profiles.keys():
+            species_profile = self.species_profiles[class_id]
+            model = BulkDensityProfileModel.from_species_data(species_profile,self.species_cols,self.height_col,
+                                                              self.mass_ratio_dict,self.intercept,self.smoothing_factor)
+            models[class_id] = model
+
+        return models
+
+
+
+    def to_file(self, filepath):
+        """
+        Save all model information to a binary file.
+        """
+
         import pickle
         with open(filepath, 'wb') as f:
             pickle.dump(self, f)
-
-
-
 
 

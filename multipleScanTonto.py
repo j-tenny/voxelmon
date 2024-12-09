@@ -124,8 +124,8 @@ biomass_list = []
 for plot in biomass['Plot_ID'].unique():
     biomass_filter = biomass[(biomass['Plot_ID']==plot) & (biomass['Height_m']>=1)].copy()
     for col in biomass_classes:
-        biomass_filter[col] = smooth(biomass_filter[col],sigma=sigma)
-    biomass_filter['TOTAL'] = smooth(biomass_filter['TOTAL'],sigma=sigma)
+        biomass_filter[col] = smooth(biomass_filter[col], smoothing_factor=sigma)
+    biomass_filter['TOTAL'] = smooth(biomass_filter['TOTAL'], smoothing_factor=sigma)
     biomass_list.append(biomass_filter)
 biomass = pd.concat(biomass_list)
 biomass['CLASS'] = [get_class(string) for string in biomass['Plot_ID']]
@@ -137,7 +137,7 @@ for file in tls_summary_files:
     df_tls = pd.read_csv(file)
     df_tls.insert(0,'Plot_ID',os.path.basename(file).strip('.csv'))
     df_tls = df_tls[df_tls['height']>=.2]
-    df_tls[feature] = smooth(df_tls[feature], sigma=sigma)
+    df_tls[feature] = smooth(df_tls[feature], smoothing_factor=sigma)
     if i == 0:
         df_all = df_tls
         i+=1
@@ -163,14 +163,14 @@ surface_biomass_plot = surface_biomass_plot.dropna()
 sns.scatterplot(surface_biomass_plot, x='pad_canopy', y='LOAD_DOWNED', hue='CLASS')
 plt.show()
 
-lm = smf.ols('LOAD_DOWNED ~ pad_canopy:CLASS', surface_biomass_plot).fit()
+lm = smf.ols('LOAD_DOWNED ~ pad_canopy:CLASS', surface_biomass_plot).fit_bayesian()
 print(lm.summary())
 print('RMSE = ',(lm.resid**2).mean()**.5)
 
 sns.scatterplot(surface_biomass_plot, x='pad_surface', y='LOAD_STANDING', hue='CLASS')
 plt.show()
 
-lm = smf.ols('LOAD_STANDING ~ pad_surface:CLASS', surface_biomass_plot).fit()
+lm = smf.ols('LOAD_STANDING ~ pad_surface:CLASS', surface_biomass_plot).fit_bayesian()
 print(lm.summary())
 print('RMSE = ',(lm.resid**2).mean()**.5)
 
@@ -196,8 +196,8 @@ if by_veg_type:
             train_data = df_class[(df_class['Plot_ID'].isin(train_plots))]
             test_data = df_class[(df_class['Plot_ID'].isin(test_plots))]
             model = BulkDensityProfileModel()
-            model.fit(train_data, train_data, biomassCols=biomass_classes, cellSize=cell_size, sigma=sigma, lidarValueCol=feature)
-            pred = model.predict(test_data, lidarValueCol=feature)
+            model.fit_bayesian(train_data, train_data, species_cols=biomass_classes, cellSize=cell_size, smoothing_factor=sigma, lidar_value_col=feature)
+            pred = model.predict(test_data, lidar_value_col=feature)
             results.append(pred)
         with open(class_id + '.model', 'wb') as f:
             pickle.dump(model,f)
@@ -217,9 +217,9 @@ else:
         train_data = df_class[(df_class['Plot_ID'].isin(train_plots))]
         test_data = df_class[(df_class['Plot_ID'].isin(test_plots))]
         model = BulkDensityProfileModel()
-        model.fit(lidarProfile = train_data, biomassProfile=train_data, biomassCols=biomass_classes, cellSize=cell_size, sigma=sigma,
-                  lidarValueCol=feature, fitIntercept=True, twoStageFit=True)
-        pred = model.predict(test_data, lidarValueCol=feature)
+        model.fit_bayesian(lidarProfile = train_data, biomassProfile=train_data, species_cols=biomass_classes, cellSize=cell_size, smoothing_factor=sigma,
+                           lidar_value_col=feature, fit_intercept=True, two_stage_fit=True)
+        pred = model.predict(test_data, lidar_value_col=feature)
         results.append(pred)
     with open('combined.model', 'wb') as f:
         pickle.dump(model, f)

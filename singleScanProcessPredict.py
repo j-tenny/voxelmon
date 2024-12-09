@@ -51,7 +51,7 @@ if process:
 
         profile['EVENT_ID'] = baseFileName
         profile['CANOPY_CLASS'] = field_summary.loc[baseFileName,'CANOPY_CLASS']
-        profile = canopyModel.predict(profile,lidarValueCol='pad',heightCol='height',classIdCol='CANOPY_CLASS',resultCol='CBD',plotIdCol='EVENT_ID')
+        profile = canopyModel.predict(profile, lidar_value_col='pad', height_col='height', classIdCol='CANOPY_CLASS', result_col='CBD', plot_id_col='EVENT_ID')
 
         profile.to_csv(exportFolder.joinpath(baseFileName+'.csv'),index=False)
 

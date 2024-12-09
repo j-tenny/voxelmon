@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 
 
 def get_files_list(directory, keyword, recursive=True):
@@ -266,9 +267,63 @@ def summarize_profiles(profiles, bin_height=.1, min_height=1., fsg_threshold=.01
 
 
 
+def calculate_species_proportions(profile_data: pd.DataFrame,
+                                  species_cols: list[str],
+                                  result_col: str)->pd.DataFrame:
+    """
+    Convert CBD values to proportion of total CBD.
+
+    Args:
+        profile_data:
+        species_cols:
+        result_col:
+
+    Returns:
+
+    """
+
+    profile_data = profile_data.copy()
+
+    # Get species distributions
+    profile_data[result_col] = profile_data[species_cols].sum(axis=1)
+    for col in species_cols:
+        # Get species composition percentage for each height bin
+        profile_data[col] = (profile_data[col] / profile_data[result_col])
+        # Forward fill percentages for nan or inf bins resulting from divide by zero error
+        profile_data.loc[~np.isfinite(profile_data[col]), col] = np.nan
+        profile_data[col] = profile_data[col].ffill()
+
+    return profile_data
 
 
-def smooth(values,sigma=.01):
+
+def smooth(values, smoothing_factor):
+    return smooth_w_spline(values,smoothing_factor)
+
+
+def smooth_w_running_avg(values,window_size=40):
+    import numpy as np
+    from numba import njit,float64,int32,prange
+
+    values = np.array(values,dtype=np.float64)
+    window_size = np.int32(window_size)
+
+    @njit(float64[:](float64[:], int32), parallel=True)
+    def running_average(values, window_size):
+        n = values.shape[0]
+        result = np.empty(n, dtype=np.float64)
+        half_window = window_size // 2
+
+        for i in prange(n):
+            start = max(0, i - half_window)
+            end = min(n, i + half_window + 1)
+            result[i] = np.nanmean(values[start:end])
+
+        return result
+
+    return running_average(values, window_size)
+
+def smooth_w_spline(values,sigma=.01):
     import numpy as np
     from scipy import interpolate
 

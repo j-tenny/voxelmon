@@ -64,20 +64,20 @@ fwrite(field_summary,'../TontoNF/field_summary_output.csv')
 
 
 i = 0
-colname_template = c('Plot_ID','Height_m',unique(field$SPECIES))
+colname_template = c('plot_id','height_m',unique(field$SPECIES))
 for (plotid in unique(field$PLOT_NAME)){
   field_slice = field[PLOT_NAME==plotid,]
   heights = seq(0,max(field_slice$HEIGHT),binSize)
   output = as.data.frame(matrix(0,ncol=length(colname_template),nrow=length(heights)))
   names(output) = colname_template
-  output$Plot_ID = plotid
-  output$Height_m = heights
+  output$plot_id = plotid
+  output$height_m = heights
   for (row_index in seq(0,nrow(field_slice))){
     species = field_slice[row_index,SPECIES]
     base_ht = field_slice[row_index,BASE_HT]
     ht = field_slice[row_index,HEIGHT]
     bulk_density = field_slice[row_index,(FOLIAR_BIOMASS/(pi*11.3^2*(HEIGHT-BASE_HT)))]
-    output[(output$Height_m>=base_ht) & (output$Height_m < ht),species] = output[(output$Height_m>=base_ht) & (output$Height_m < ht),species]+bulk_density
+    output[(output$height_m>=base_ht) & (output$height_m < ht),species] = output[(output$height_m>=base_ht) & (output$height_m < ht),species]+bulk_density
   }
   for (col in colname_template[-1:-2]){
     output[,col] = zoo::rollmean(output[,col],k=4,na.pad = T,align='center')
@@ -94,11 +94,11 @@ for (plotid in unique(field$PLOT_NAME)){
 
 output_all[is.na(output_all)]=0
 
-ggplot(melt(rev(as.data.table(output_all[,-2])),id.vars = 'Plot_ID',value.name = 'Biomass'),aes(Plot_ID,Biomass,fill=variable))+
+ggplot(melt(rev(as.data.table(output_all[,-2])),id.vars = 'plot_id',value.name = 'biomass'),aes(plot_id,biomass,fill=variable))+
   geom_col()
 
 
-ggplot(melt(rev(as.data.table(output_all[,-2])),id.vars = 'Plot_ID',value.name = 'Biomass'),aes(Plot_ID,Biomass,fill=variable))+
+ggplot(melt(rev(as.data.table(output_all[,-2])),id.vars = 'plot_id',value.name = 'biomass'),aes(plot_id,biomass,fill=variable))+
   geom_col()
 
 output_all$TOTAL = apply(output_all[,3:ncol(output_all)],1,sum)

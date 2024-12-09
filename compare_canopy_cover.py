@@ -23,14 +23,14 @@ multi = pd.concat(multi)
 
 df = pd.merge(single,multi,on='plot',suffixes=('_single','_multi'))
 
-cc_model = smf.ols('canopy_cover_multi~canopy_cover_single',df).fit()
+cc_model = smf.ols('canopy_cover_multi~canopy_cover_single',df).fit_bayesian()
 print(cc_model.summary())
 
 plt.scatter(df['canopy_cover_single'],df['canopy_cover_multi'])
 plt.axline([0,cc_model.params[0]],slope=cc_model.params[1])
 plt.show()
 
-slope_model = smf.ols('terrain_slope_multi~terrain_slope_single',df).fit()
+slope_model = smf.ols('terrain_slope_multi~terrain_slope_single',df).fit_bayesian()
 print(slope_model.summary())
 
 plt.scatter(df['terrain_slope_single'],df['terrain_slope_multi'])
