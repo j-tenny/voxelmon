@@ -41,7 +41,7 @@ for i in range(len(singleScanFiles)):
     dem_multi = dem_multi[~np.isnan(dem_multi['z'])]
 
     # Fit a plane using linear regression
-    model = linear_model.LinearRegression().fit_bayesian(dem_multi[['x', 'y']], dem_multi['z'])
+    model = linear_model.LinearRegression().fit(dem_multi[['x', 'y']], dem_multi['z'])
 
     # Extract coefficients
     intercept = model.intercept_
@@ -143,8 +143,8 @@ plt.show()
 
 print('Per bin with refit')
 score(df_all['padMulti'],df_all['padSingle'],refit=True)
-lm = smf.ols('padMulti~padSingle',df_all).fit_bayesian()
-print(lm.profile())
+lm = smf.ols('padMulti~padSingle',df_all).fit()
+print(lm.summary())
 
 f,[ax1,ax2] = plt.subplots(ncols=2, figsize = [7,4])
 
@@ -153,8 +153,7 @@ ax1.axline((0,lm.params['Intercept']),slope=lm.params['padSingle'],color='black'
 ax1.axline((0,0),(1,1),color='black',linestyle='dashed')
 ax1.set_ylim(ax1.get_xlim())
 
-ax1.legend(loc='lower right')
-ax2.legend(loc='lower right')
+ax1.legend(loc='lower right',title='Veg Type')
 ax1.set_xlabel('Single-Scan LAD ($m^2$/$m^3$)')
 ax1.set_ylabel('Multiple-Scan LAD ($m^2$/$m^3$)')
 ax1.text(.05,.93,'$R^2$ = ' + str(lm.rsquared.round(2)),transform=ax1.transAxes)
@@ -168,20 +167,20 @@ print('Per plot with refit')
 score(df_all_plot['paiMulti'],df_all_plot['paiSingle'],refit=True)
 
 
-lm2 = smf.ols('paiMulti~paiSingle',df_all_plot).fit_bayesian()
-print(lm2.profile())
+lm2 = smf.ols('paiMulti~paiSingle',df_all_plot).fit()
+print(lm2.summary())
 sns.scatterplot(df_all_plot,x='paiSingle',y='paiMulti',hue='class',palette=['orange','green','blue'],ax=ax2)
 ax2.axline((0,lm2.params['Intercept']),slope=lm2.params['paiSingle'],color='black')
 ax2.axline((0,0),(1,1),color='black',linestyle='dashed')
 ax2.set_xlim(ax2.get_ylim())
-
+ax2.legend(loc='lower right',title='Veg Type')
 ax2.set_xlabel('Single-Scan LAI ($m^2$/$m^2$)')
 ax2.set_ylabel('Multiple-Scan LAI ($m^2$/$m^2$)')
 ax2.text(.05,.93,'$R^2$ = ' + str(lm2.rsquared.round(2)),transform=ax2.transAxes)
 ax2.text(.05,.88,'RMSE = ' + str(((lm2.resid ** 2).mean() ** .5).round(2)) + ' $m^2$/$m^2$',transform=ax2.transAxes)
-
 f.tight_layout(pad=.5, w_pad=2.5)
 plt.savefig('D:/DataWork/pypadResults/single-multi_pad.pdf')
+plt.savefig('D:/DataWork/pypadResults/single-multi_pad.png')
 plt.show()
 
 sns.scatterplot(df_all[['class','occludedSingle','heightSingle']].groupby(['class','heightSingle']).mean(),x='occludedSingle',y='heightSingle',hue='class')
@@ -192,3 +191,7 @@ df_plot_summary = df_all_plot.groupby('class').mean()
 bins_corr = df_all[['resid','sq_resid','occludedSingle','occludedMulti','heightSingle','terrainSlope','terrainConcavity','terrainRoughness']].corr()
 sns.heatmap(bins_corr)
 plt.show()
+
+smf.ols('resid~occludedSingle+padSingle',df_all).fit().summary()
+smf.ols('sq_resid~occludedSingle+padSingle',df_all).fit().summary()
+smf.ols('resid~terrainRoughness',df_all).fit().summary()

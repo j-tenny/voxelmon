@@ -1172,8 +1172,7 @@ class BulkDensityProfileModelFitter:
             betas = pm.Normal('betas', mu=prior_mean, sigma=prior_std, shape=(X.shape[1],))
 
             # Assume normal distribution of residuals
-            #sigma = pm.HalfNormal('sigma', sigma=sigma_residuals)
-            sigma = pm.Normal('sigma', sigma=sigma_residuals)
+            sigma = pm.HalfNormal('sigma', sigma=sigma_residuals)
 
             if fit_intercept:
                 # Prior for the intercept

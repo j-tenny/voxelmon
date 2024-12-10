@@ -32,7 +32,7 @@ def main():
     feature = 'pad' # Can be 'pad' to train model with plant area density or 'foliage' to train model with foliage volume
     prior_mean = np.array([0.141,0.28,0.141,0.49,.333])
     prior_std = prior_mean*.05
-    sigma_residuals = .02
+    sigma_residuals = 1
     sigma_intercept = .005
     fit_intercept = False
     two_stage_fit = True
@@ -43,7 +43,7 @@ def main():
     bootstrap_confidence_intervals = False
     generate_test_figure = False # Show figure from individual random plot.
     generate_figures = True # Generate figures for all plots
-    variance_stats = False # Generate stats for effects of terrain, occlusion, height
+    variance_stats = True # Generate stats for effects of terrain, occlusion, height
 
     #%%#####################################################################################################################
     ### Define Helper Functions ###
@@ -211,8 +211,8 @@ def main():
     ax1.axline((0, lm_downed.params.iloc[0]), slope=lm_downed.params.iloc[3], color='blue', linestyle='--')
     ax2.axline((0, lm_standing.params.iloc[0]), slope=lm_standing.params.iloc[1], color='black', linestyle='--')
     f.tight_layout(pad=.5, w_pad=2.5)
-    ax1.legend(loc='lower right')
-    ax2.legend(loc='lower right')
+    ax1.legend(loc='lower right',title='Veg Type')
+    ax2.legend(loc='lower right',title='Veg Type')
     ax1.set_xlabel('LAI ($m^2$/$m^2$)')
     ax1.set_ylabel('Downed Surface Fuel Load (kg/$m^2$)')
     ax1.text(.05,.93,'$R^2$ = ' + str(lm_downed.rsquared.round(2)),transform=ax1.transAxes)
@@ -222,6 +222,7 @@ def main():
     ax2.text(.05,.93,'$R^2$ = ' + str(lm_standing.rsquared.round(2)),transform=ax2.transAxes)
     ax2.text(.05,.88,'RMSE = ' + str(((lm_standing.resid ** 2).mean() ** .5).round(2)) + ' kg/$m^2$',transform=ax2.transAxes)
     plt.savefig(export_folder + '\\SurfaceFuelPAD.pdf')
+    plt.savefig(export_folder + '\\SurfaceFuelPAD.png')
     plt.show()
 
     #%%#####################################################################################################################
@@ -310,7 +311,6 @@ def main():
             model_fitter.fit_mass_ratio_bayesian(prior_mean,prior_std,sigma_residuals,sigma_intercept,fit_intercept,two_stage_fit)
             models = model_fitter.to_models()
             # Get predictions for test set
-            test_data['biomassPred'] = 0.0
             for veg_type in test_data['veg_type'].unique():
                 model = models[veg_type]
                 test_data.loc[test_data['veg_type']==veg_type,'biomassPred'] = model.predict(test_data[test_data['veg_type'] == veg_type],
@@ -411,8 +411,8 @@ def main():
     ax1.set_ylim(ax1.get_xlim())
     ax2.set_ylim(ax2.get_xlim())
     f.tight_layout(pad=.5, w_pad=2.5)
-    ax1.legend(loc='lower right')
-    ax2.legend(loc='lower right')
+    ax1.legend(loc='lower right',title='Veg Type')
+    ax2.legend(loc='lower right',title='Veg Type')
     ax1.set_xlabel('Conventional Estimate Canopy Fuel Load (kg/$m^2$)')
     ax1.set_ylabel('Lidar Estimate Canopy Fuel Load (kg/$m^2$)')
     ax1.text(.05,.93,'$R^2$ = ' + str(round(score_cfl['r2'], 2)),transform=ax1.transAxes)
@@ -423,6 +423,9 @@ def main():
     ax2.text(.05,.88,'RMSE = ' + str(round(score_cbd['rmse'], 2)) + ' kg/$m^3$',transform=ax2.transAxes)
 
     plt.savefig(export_folder + '_'.join(['Results', feature, str(cell_size), str(max_occlusion), str(profile_smoothing_factor)]) + '.pdf')
+    plt.savefig(export_folder + '_'.join(
+        ['Results', feature, str(cell_size), str(max_occlusion), str(profile_smoothing_factor)]) + '.png')
+
     plt.show()
 
     if bootstrap_confidence_intervals:
