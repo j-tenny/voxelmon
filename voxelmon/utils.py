@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from typing import Union
 
 
 def get_files_list(directory, keyword, recursive=True):
@@ -17,6 +18,33 @@ def get_files_list(directory, keyword, recursive=True):
             if os.path.isfile(path):
                 matching_files.append(path)
     return matching_files
+
+
+def directory_to_pandas(directory,keyword='.csv',recursive=False,filename_col:Union[str,None]='filename',include_filename_ext=False):
+    """
+    Read csv files from a directory and concatenate in a pandas dataframe
+    Args:
+        directory: path to dir
+        keyword: keyword used in filtering files
+        recursive: recursively search through directories within directory
+        filename_col: name of column to include filenames. If None, does not append.
+        include_filename_ext: include filename extension in filenames column
+
+    Returns:
+
+    """
+    import os
+    files = get_files_list(directory,keyword,recursive)
+    results = []
+    for file in files:
+        df = pd.read_csv(file)
+        if filename_col is not None:
+            if include_filename_ext:
+                df['filename'] = os.path.basename(file)
+            else:
+                df['filename'] = os.path.splitext(os.path.basename(file))[0]
+        results.append(df)
+    return pd.concat(results).reset_index(drop=True)
 
 
 def bin2D(pulses,function,cellSize,asArray = True,binExtents=None):
@@ -376,6 +404,7 @@ def interp2D_w_cubic_extrapolation(xy_train, values_train, xy_predict):
         model = sm.OLS(values_train,create_dmatrix(xy_train)).fit()
         values_predict[nans] = model.predict(create_dmatrix(xy_predict[nans]))
     return values_predict
+
 
 def _default_folder_setup(export_folder):
     from pathlib import Path

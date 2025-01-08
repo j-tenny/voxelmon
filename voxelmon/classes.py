@@ -982,8 +982,8 @@ class BulkDensityProfileModel:
         self.interpolator = interpolate.interp1d(x=self.mass_ratio_profile[:, 0],
                                                  y=self.mass_ratio_profile[:, 1],
                                                  bounds_error=False,
-                                                 fill_value=(self.mass_ratio_profile[1, 0],
-                                                             self.mass_ratio_profile[1, -1]),
+                                                 fill_value=(self.mass_ratio_profile[0, 1], # Fill with first & last val
+                                                             self.mass_ratio_profile[-1, 1]),
                                                  assume_sorted=True)
 
     def calculate_mass_ratio_profile(self,
@@ -1036,6 +1036,8 @@ class BulkDensityProfileModel:
 
         """
         from voxelmon import smooth
+        #if self.intercept != 0:
+        #    raise NotImplementedError('Non-zero intercept not currently implemented')
 
         if plot_id_col is not None:
             results = []
@@ -1047,14 +1049,14 @@ class BulkDensityProfileModel:
                 lidar_vals = smooth(df_filter[lidar_value_col], self.smoothing_factor).clip(min=0)
                 # Interpolate mass ratio profile to match new heights
                 mass_ratio_profile = self.interpolator(df_filter[height_col])
-                results.append(lidar_vals * mass_ratio_profile)
+                results.append(lidar_vals * mass_ratio_profile + self.intercept)
             results = np.concatenate(results)
         else:
             # Smooth lidar values
             lidar_vals = smooth(profile_data[lidar_value_col], self.smoothing_factor).clip(min=0)
             # Interpolate mass ratio profile to match new heights
             mass_ratio_profile = self.interpolator(profile_data[height_col])
-            results = lidar_vals * mass_ratio_profile
+            results = lidar_vals * mass_ratio_profile + self.intercept
 
         return results
 
@@ -1163,9 +1165,13 @@ class BulkDensityProfileModelFitter:
         X = self.profile_data[self.species_cols].to_numpy()
 
         # Scale lidar value by species proportions
-        X *= self.profile_data[self.lidar_value_col].to_numpy().reshape(-1,1)
+        pad = self.profile_data[self.lidar_value_col].to_numpy().reshape(-1, 1)
+        X *= pad
 
         y = self.profile_data[self.cbd_col].to_numpy()
+
+        #if fit_intercept:
+        #    raise NotImplementedError('Fit with intercept is not fully implemented')
 
         with pm.Model() as model:
             # Priors for coefficients
@@ -1220,6 +1226,7 @@ class BulkDensityProfileModelFitter:
             for species in self.mass_ratio_dict:
                 self.mass_ratio_dict[species] *= self.adj_factor
 
+        #TODO: Fix fit with intercept
 
         #TODO: Standardize outputs
 

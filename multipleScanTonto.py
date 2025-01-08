@@ -10,7 +10,7 @@ import seaborn as sns
 import math
 import statsmodels.formula.api as smf
 from multiprocessing import freeze_support, set_start_method
-from voxelmon import PtxBlk360G1, PtxBlk360G1_Group, BulkDensityProfileModelFitter, get_files_list, plot_side_view, calculate_species_proportions
+from voxelmon import PtxBlk360G1, PtxBlk360G1_Group, BulkDensityProfileModelFitter, get_files_list, plot_side_view, calculate_species_proportions,smooth
 
 ########################################################################################################################
 
@@ -42,8 +42,7 @@ def main():
     nfolds = 10 # Number of folds used in k-fold cross validation. Set to 1 to train with all data (can't test).
     bootstrap_confidence_intervals = False
     generate_test_figure = False # Show figure from individual random plot.
-    generate_figures = False # Generate figures for all plots
-    variance_stats = False # Generate stats for effects of terrain, occlusion, height
+    generate_figures = True # Generate figures for all plots
 
     #%%#####################################################################################################################
     ### Define Helper Functions ###
@@ -193,13 +192,43 @@ def main():
 
     # Model downed woody debris as a function of canopy plant area index by vegetation type
     lm_downed = smf.ols('LOAD_DOWNED ~ pai:veg_type', surface_biomass_plot).fit()
+    surface_biomass_plot['LOAD_DOWNED_PRED'] = lm_downed.fittedvalues
     print(lm_downed.summary())
     print('RMSE = ', (lm_downed.resid ** 2).mean() ** .5)
 
     # Model standing (live) surface fuel load as a function of near-surface plant area density
     lm_standing = smf.ols('LOAD_STANDING ~ pad_surface', surface_biomass_plot).fit()
+    surface_biomass_plot['LOAD_STANDING_PRED'] = lm_standing.fittedvalues
     print(lm_standing.summary())
     print('RMSE = ', (lm_standing.resid ** 2).mean() ** .5)
+
+    print('All veg types:')
+    surface_biomass_plot_f = surface_biomass_plot
+    print('Surface fuel load downed:')
+    score(surface_biomass_plot_f['LOAD_DOWNED'],surface_biomass_plot_f['LOAD_DOWNED_PRED'])
+    print('Surface fuel load standing:')
+    score(surface_biomass_plot_f['LOAD_STANDING'], surface_biomass_plot_f['LOAD_STANDING_PRED'])
+
+    print('CHAP type:')
+    surface_biomass_plot_f = surface_biomass_plot[surface_biomass_plot['veg_type'] == 'CHAP']
+    print('Surface fuel load downed:')
+    score(surface_biomass_plot_f['LOAD_DOWNED'], surface_biomass_plot_f['LOAD_DOWNED_PRED'])
+    print('Surface fuel load standing:')
+    score(surface_biomass_plot_f['LOAD_STANDING'], surface_biomass_plot_f['LOAD_STANDING_PRED'])
+
+    print('PJO type:')
+    surface_biomass_plot_f = surface_biomass_plot[surface_biomass_plot['veg_type'] == 'PJO']
+    print('Surface fuel load downed:')
+    score(surface_biomass_plot_f['LOAD_DOWNED'], surface_biomass_plot_f['LOAD_DOWNED_PRED'])
+    print('Surface fuel load standing:')
+    score(surface_biomass_plot_f['LOAD_STANDING'], surface_biomass_plot_f['LOAD_STANDING_PRED'])
+
+    print('PPO Type:')
+    surface_biomass_plot_f = surface_biomass_plot[surface_biomass_plot['veg_type'] == 'PPO']
+    print('Surface fuel load downed:')
+    score(surface_biomass_plot_f['LOAD_DOWNED'], surface_biomass_plot_f['LOAD_DOWNED_PRED'])
+    print('Surface fuel load standing:')
+    score(surface_biomass_plot_f['LOAD_STANDING'], surface_biomass_plot_f['LOAD_STANDING_PRED'])
 
     # Produce surface fuel regression figures
     f, [ax1, ax2] = plt.subplots(ncols=2, constrained_layout=True, figsize=[7, 4])
@@ -333,7 +362,6 @@ def main():
 
     # Format dataframe with predictions
     results = pd.concat(results)
-    results['volTotal'] = math.pi * grid_radius ** 2 * cell_size
     results = results.fillna(0)
     results['biomass'] = results[
         'cbd_total']  # Conventional estimate of canopy bulk density at a height bin, all species combined
@@ -341,20 +369,20 @@ def main():
 
     # Write results to csv files (separately for each plot)
     for plot in plots:
-        results_filter = results[results['plot_id'] == plot]
-        results_filter.to_csv(export_folder + '\\' + 'Final_Profile' + '\\' + plot + '.csv')
+        plot_filter = results['plot_id'] == plot
+        # Smooth observed data as it gets smoothed within model fitting process
+        results.loc[plot_filter, 'biomass'] = smooth(results.loc[plot_filter, 'biomass'], profile_smoothing_factor)
+        # Write results to csv files (separately for each plot)
+        results.loc[plot_filter, :].to_csv(export_folder + '\\' + 'Final_Profile' + '\\' + plot + '.csv')
 
     # Aggregate canopy bulk density along profile
-    results_plot = results.pivot_table(index='plot_id', aggfunc={'biomass': ['mean', 'max'],
-                                                                 'biomassPred': ['mean', 'max'],
-                                                                 'occluded': 'mean',
-                                                                 'volTotal': 'sum'}).reset_index()
+    results_plot = results.pivot_table(index='plot_id', aggfunc={'biomass': ['mean', 'max','sum'],
+                                                                 'biomassPred': ['mean', 'max','sum'],
+                                                                 'occluded': 'mean'}).reset_index()
 
-    # Calculate total canopy fuel load
-    results_plot['biomass', 'sum'] = results_plot['biomass', 'mean'] * results_plot['volTotal', 'sum'] / (
-            math.pi * plot_radius ** 2)
-    results_plot['biomassPred', 'sum'] = results_plot['biomassPred', 'mean'] * results_plot['volTotal', 'sum'] / (
-            math.pi * plot_radius ** 2)
+    # Calculate total canopy fuel load (integral of profile)
+    results_plot['biomass', 'sum'] *= cell_size
+    results_plot['biomassPred', 'sum'] *= cell_size
 
     results_plot['veg_type'] = [get_class(string) for string in results_plot['plot_id']]
 
@@ -547,54 +575,6 @@ def main():
             plt.savefig(export_folder + plotname + '.pdf')
             plt.show()
 
-    # %%#####################################################################################################################
-    # Look for patterns in the residuals
-    if variance_stats:
-        from sklearn.preprocessing import robust_scale
-
-        residuals = pd.concat(
-            [results['biomassPred'] - results['biomass'], abs(results['biomassPred'] - results['biomass']),
-             results['biomass'], results['occluded'], results['height'], results['veg_type']], axis=1)
-        residuals.columns = ['resid', 'resid_abs', 'biomass', 'occlusion', 'height', 'veg_type']
-        residuals.describe()
-
-        residuals_plot = pd.concat([results_plot['biomassPred', 'sum'] - results_plot['biomass', 'sum'],
-                                    results_plot['biomassPred', 'max'] - results_plot['biomass', 'max'],
-                                    abs(results_plot['biomassPred', 'sum'] - results_plot['biomass', 'sum']),
-                                    abs(results_plot['biomassPred', 'max'] - results_plot['biomass', 'max']),
-                                    results_plot['biomass', 'sum'], results_plot['biomass', 'max'],
-                                    results_plot['occluded'], results_plot['veg_type']], axis=1)
-        residuals_plot.columns = ['resid_sum', 'resid_max', 'resid_abs_sum', 'resid_abs_max', 'biomass_sum',
-                                  'biomass_max',
-                                  'occlusion', 'veg_type']
-        print(residuals_plot.describe())
-
-        residuals.iloc[:, :-1] = robust_scale(residuals.iloc[:, :-1])
-        residuals_plot.iloc[:, :-1] = robust_scale(residuals_plot.iloc[:, :-1])
-
-        residuals['height_class'] = ((residuals['height'] // .25) * .25).astype(int).astype(str)
-        sns.kdeplot(residuals, x='occlusion', y='resid')
-        sns.scatterplot(residuals, x='occlusion', y='resid', hue='veg_type', alpha=.1, size=.5)
-        plt.show()
-
-        print(smf.ols('resid_abs~occlusion+biomass', residuals).fit_bayesian().profile())
-        print(smf.ols('resid_abs~occlusion*C(veg_type,Sum)+biomass*C(veg_type,Sum)',
-                      residuals).fit_bayesian().profile())
-        print(smf.ols('resid~occlusion+biomass', residuals).fit_bayesian().profile())
-        print(
-            smf.ols('resid~occlusion*C(veg_type,Sum)+biomass*C(veg_type,Sum)', residuals).fit_bayesian().profile())
-
-        sns.scatterplot(residuals_plot, x='biomass_sum', y='resid_sum', hue='veg_type')
-        plt.show()
-        sns.scatterplot(residuals_plot, x='occlusion', y='resid_sum', hue='veg_type')
-        plt.show()
-        print(smf.ols('resid_abs~occlusion+biomass_sum', residuals_plot).fit_bayesian().profile())
-        print(smf.ols('resid_sum~occlusion+biomass_sum', residuals_plot).fit_bayesian().profile())
-
-        sns.scatterplot(residuals_plot, x='occlusion', y='resid_max', hue='veg_type')
-        plt.show()
-        print(smf.ols('resid_max~occlusion+biomass_max',
-                      residuals_plot[results_plot['veg_type'] == 'PPO']).fit_bayesian().profile())
 
 if __name__ == '__main__':
     freeze_support()
