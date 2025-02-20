@@ -240,6 +240,7 @@ def summarize_profiles(profiles, bin_height=.1, min_height=1., fsg_threshold=.01
         empty_counter = 0
         filled_counter = 0
         noise_bumps = 0
+        has_gap = False
 
         for i in range(profile.shape[0]):
             if profile[i,1] < fsg_threshold:
@@ -258,10 +259,15 @@ def summarize_profiles(profiles, bin_height=.1, min_height=1., fsg_threshold=.01
                 # Increase empty counter
                 empty_counter += 1
 
+                # confirm if a gap exists
+                if empty_counter >= min_contiguous_filled / bin_height:
+                    has_gap = True
+
                 # If empty space meets criteria, save the height we've been counting from. Ensure fsg_h1 is only set once.
                 if (fsg_h1==min_height) and (empty_counter >= (min_contiguous_empty / bin_height)):
                     fsg_h1 = fsg_h1_temp
                     filled_counter = 0 # Record fsg top at next "filled" bin
+
             elif profile[i,1] >= fsg_threshold:
                 # Bin is "filled"
                 # Decide whether to reset empty_counter
@@ -279,14 +285,17 @@ def summarize_profiles(profiles, bin_height=.1, min_height=1., fsg_threshold=.01
                 filled_counter += 1
 
                 # If filled space meets criteria, save height and we're done
-                if filled_counter >= min_contiguous_filled / bin_height:
+                if (filled_counter >= min_contiguous_filled / bin_height) and has_gap:
                     fsg_h2 = fsg_h2_temp
                     break
 
             else:
                 # Data is probably na
                 continue
-
+        if fsg_h1==min_height:
+            fsg_h1 = 0
+        if fsg_h2==min_height:
+            fsg_h2 = 0
         summary.loc[summary[plot_id_col] == plot_id, 'fsg_h1'] = fsg_h1
         summary.loc[summary[plot_id_col] == plot_id, 'fsg_h2'] = fsg_h2
         summary.loc[summary[plot_id_col] == plot_id, 'fsg'] = fsg_h2 - fsg_h1
@@ -438,4 +447,5 @@ def _default_postprocessing(grid, plot_name, export_folder, plot_radius=11.3, ma
     grid.export_dem_as_csv(os.path.join(export_folder, 'DEM/', plot_name) + '.csv')
     profile.write_csv(os.path.join(export_folder, 'PAD_Summary/', plot_name) + '.csv')
     summary.to_csv(os.path.join(export_folder, 'Plot_Summary/', plot_name) + '.csv', index=False)
+    profile = profile.to_pandas()
     return profile,summary

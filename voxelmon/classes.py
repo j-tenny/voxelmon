@@ -644,7 +644,12 @@ class PtxBlk360G1:
 
 
     def get_transform(self):
-        self.transform = np.loadtxt(self.path,np.float64,skiprows=6,max_rows=4).T
+        import os
+        aux_transform = self.path[:-4] + '.mat.txt'
+        if os.path.exists(aux_transform):
+            self.transform = np.loadtxt(aux_transform)
+        else:
+            self.transform = np.loadtxt(self.path,np.float64,skiprows=6,max_rows=4).T
         self.originOriginal = self.transform[:3,3]
         self.origin = np.array([0.,0.,0.])
 
@@ -971,8 +976,9 @@ class BulkDensityProfileModel:
             intercept = 0
         mass_ratio_dict = dict(zip(df.columns[1:], params[1:]))
         height_col = df.columns[0]
-        model = cls().calculate_mass_ratio_profile(df, df.columns[1:], height_col,
-                                                   mass_ratio_dict, intercept, smoothing_factor)
+        model = cls()
+        model.calculate_mass_ratio_profile(df, df.columns[1:], height_col,
+                                           mass_ratio_dict, intercept, smoothing_factor)
         return model
 
 

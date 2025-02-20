@@ -11,6 +11,15 @@ import voxelmon.utils
 from voxelmon import Grid,Pulses,PtxBlk360G1,get_files_list,plot_side_view, BulkDensityProfileModel
 import pyrothermel
 
+input_folder = r'D:\DataWork\SanCarlos\SanCarlosFeb25\PTX'
+keyword = '.ptx'
+field_summary_name = 'FieldSummary.csv'
+results_summary_name = 'ResultsSummary.csv'
+exportFolder = 'G:/wscatclover/'
+canopy_model_path = 'G:/wscatclover/wscatclover_species_composition.csv'
+cbd_axis_limit = .08
+process = True
+generateFigures = True
 
 plotRadius = 11.3 # Distance from grid center to edge
 maxGridHeight = 30 # Height of grid above coordinate [0,0,0]
@@ -18,19 +27,10 @@ maxOcclusion = .75
 cellSize = .1
 min_height = 1
 
-inputFolder = r'C:\Users\john1\OneDrive - Northern Arizona University\Work\TontoNF\TLS\PTX\AllScans/'
-keyword = '1.ptx'
-field_summary_name = 'SurfaceFuelSummary.csv'
-results_summary_name = 'ResultsSummary.csv'
-exportFolder = 'G:/Scans/Tonto/ResultsPredict/'
-canopyModelPath = 'combined.model'
-process = False
-generateFigures = True
+canopyModel = BulkDensityProfileModel.from_csv(canopy_model_path)
+field_summary = pd.read_csv(Path(input_folder).joinpath(field_summary_name), index_col='EVENT_ID')
 
-canopyModel = BulkDensityProfileModel.from_file(canopyModelPath)
-field_summary = pd.read_csv(Path(inputFolder).joinpath(field_summary_name),index_col='EVENT_ID')
-
-files = get_files_list(inputFolder, keyword, recursive=False)
+files = get_files_list(input_folder, keyword, recursive=False)
 start_time_all = time.time()
 i=1
 
@@ -44,14 +44,13 @@ if process:
         print("Starting file ", i, " of ",len(files))
         baseFileName = os.path.splitext(os.path.basename(ptxFile))[0].split('-')[0]
 
-        ptx = PtxBlk360G1(ptxFile,applyTranslation=False,applyRotation=False,dropNull=False)
+        ptx = PtxBlk360G1(ptxFile,applyTranslation=True,applyRotation=True,dropNull=False)
         profile, plot_summary = ptx.execute_default_processing(export_folder=exportFolder, plot_name=baseFileName, cell_size=cellSize,
                                                          plot_radius=plotRadius, max_height=maxGridHeight, max_occlusion=maxOcclusion,
-                                                         sigma1=0, min_pad_foliage=.01, max_pad_foliage=6).to_pandas()
-
+                                                         sigma1=0, min_pad_foliage=.01, max_pad_foliage=6)
         profile['EVENT_ID'] = baseFileName
         profile['CANOPY_CLASS'] = field_summary.loc[baseFileName,'CANOPY_CLASS']
-        profile = canopyModel.predict(profile, lidar_value_col='pad', height_col='height', classIdCol='CANOPY_CLASS', result_col='CBD', plot_id_col='EVENT_ID')
+        profile['CBD'] = canopyModel.predict(profile, lidar_value_col='pad', height_col='height', plot_id_col='EVENT_ID')
 
         profile.to_csv(exportFolder.joinpath(baseFileName+'.csv'),index=False)
 
@@ -69,6 +68,7 @@ for profile_path in profile_paths:
         profile = pd.read_csv(profile_path)
         profiles.append(profile)
 profiles = pd.concat(profiles)
+profiles = profiles[profiles['height']>=.2]
 summary = voxelmon.utils.summarize_profiles(profiles,bin_height=cellSize,min_height=min_height,fsg_threshold=.011,cbd_col='CBD',height_col='height',pad_col='pad',occlusion_col='occluded',plot_id_col='EVENT_ID')
 summary = summary.set_index('EVENT_ID')
 summary = summary.join(field_summary,how='inner')
@@ -87,8 +87,8 @@ for plotname in summary.index:
     run = pyrothermel.PyrothermelRun(fm,ms,40,canopy_base_height=summary.loc[plotname,'fsg'],canopy_bulk_density=summary.loc[plotname,'cbd_max'])
     run.run_surface_fire_in_direction_of_max_spread()
     result = run.run_crown_fire_scott_and_reinhardt()
-    result['torching_index'] = run.calculate_torching_index(max_wind_speed=100)
-    result['crowning_index'] = run.calculate_crowning_index(max_wind_speed=100)
+    result['torching_index'] = run.calculate_torching_index(max_wind_speed=1000)
+    result['crowning_index'] = run.calculate_crowning_index(max_wind_speed=1000)
     result['EVENT_ID'] = plotname
     behave_results.append(result)
 behave_results = pd.DataFrame(behave_results)
@@ -118,7 +118,10 @@ if generateFigures:
         ymax = max(ax1.get_ylim()[1],ax2.get_ylim()[1],14)
         ax1.set_ylim([0,ymax])
         ax2.set_ylim([0,ymax])
+        if cbd_axis_limit is not None:
+            ax2.set_xlim([0,cbd_axis_limit])
         ax2.set_yticks(ax1.get_yticks())
+        ax1.text(0,1.1,plotname, transform=ax1.transAxes, fontsize=12, ha='left')
         ax1.set_ylabel('Height (m)')
         ax1.set_xlabel('Easting (m)')
         ax2.set_xlabel('Canopy Bulk Density (kg/m^3)')
