@@ -86,14 +86,21 @@ def bin3D(pulses, function, cellSize,asArray = True, binExtents=None):
     # if binExtents is None, extents are automatically pulled from pulses extents, may need to clip first
     import polars as pl
     import numpy as np
+    if hasattr(cellSize,'__iter__'):
+        cellSize = np.array(cellSize)
+        if cellSize.size != 3:
+            raise ValueError('cellSize must be scalar or 3 dimensional')
+    else:
+        cellSize = np.repeat(cellSize,3)
+
     try:
         points_df = pl.DataFrame({'x': pulses.xyz[:, 0], 'y': pulses.xyz[:, 1], 'z': pulses.xyz[:, 2]})
     except:
         points_df = pl.DataFrame({'x': pulses[:, 0], 'y': pulses[:, 1], 'z': pulses[:, 2]})
 
-    points_df = points_df.with_columns(pl.col('x').floordiv(cellSize).cast(pl.Int32).alias('xBin'),
-                                       pl.col('y').floordiv(cellSize).cast(pl.Int32).alias('yBin'),
-                                       pl.col('z').floordiv(cellSize).cast(pl.Int32).alias('zBin'))
+    points_df = points_df.with_columns(pl.col('x').floordiv(cellSize[0]).cast(pl.Int32).alias('xBin'),
+                                       pl.col('y').floordiv(cellSize[1]).cast(pl.Int32).alias('yBin'),
+                                       pl.col('z').floordiv(cellSize[2]).cast(pl.Int32).alias('zBin'))
 
     if binExtents is None:
         binMin = points_df[:, -3:].min().to_numpy().flatten()
@@ -117,6 +124,14 @@ def bin3D(pulses, function, cellSize,asArray = True, binExtents=None):
         return result[:, -1].to_numpy().reshape(gridShape,order='f')
     else:
         return result
+
+def open_file_pdal(filepath):
+    import pdal
+    import polars as pl
+    pipeline = pdal.Pipeline(f"[\"{filepath}\"]")
+    pipeline.execute()
+    return pl.DataFrame(pipeline.arrays[0])
+
 
 def is_noise_ivf(pulses,voxelSize=1,windowSize=3,minPointCount=200):
     from scipy import ndimage

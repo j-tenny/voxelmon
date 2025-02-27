@@ -18,7 +18,7 @@ results_summary_name = 'ResultsSummary.csv'
 exportFolder = 'G:/wscatclover/'
 canopy_model_path = 'G:/wscatclover/wscatclover_species_composition.csv'
 cbd_axis_limit = .08
-process = True
+process = False
 generateFigures = True
 
 plotRadius = 11.3 # Distance from grid center to edge
@@ -112,7 +112,7 @@ if generateFigures:
         [arr,arr_extents] = plot_side_view(pts,direction=3,demPtsNormalize=demPts,returnData=True)
         ax1.imshow(arr,extent=arr_extents,aspect=2)
         ax2.axhspan(summary.loc[plotname,'fsg_h1'],summary.loc[plotname,'fsg_h2'],color='yellow', alpha=0.3, label='Fuel Strata Gap (FSG)')
-        ax2.plot(profile['CBD'],profile['height'],label='Canopy Bulk Density')
+        ax2.plot(profile['CBD'],profile['height'],label='Canopy Bulk Density (kg/m^3)')
         ax2.axvline(summary.loc[plotname,'cbd_max'],linestyle='--',color='black',label='Max Canopy Bulk Density')
         ax2.axvline(.011, linestyle='--', color='yellow', label='FSG Cutoff')
         ymax = max(ax1.get_ylim()[1],ax2.get_ylim()[1],14)

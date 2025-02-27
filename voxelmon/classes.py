@@ -537,12 +537,11 @@ class Pulses:
 
         return self
 
-
     @classmethod
-    def from_las(cls,las_path,origin):
-        import laspy
-        las = laspy.read(las_path)
-        return cls.from_point_cloud_array(las.xyz,origin)
+    def from_file(cls,filepath,origin):
+        import utils
+        df = utils.open_file_pdal(filepath)
+        return cls.from_point_cloud_array(df,origin)
 
     @classmethod
     def initialize_empty_array(cls,nRecords):
@@ -584,6 +583,58 @@ class Pulses:
             import polars as pl
             df = df.select(pl.col('x'),pl.col('y'),pl.col('z'))
         df.write_csv(filepath)
+
+class ALS:
+    def __init__(self,filepath):
+        self.path = filepath
+
+    def quick_lad(self,bin_size_xy = 10, bin_size_z = 2, min_height = 1, extinction_coefficient=.5, return_type='polars'):
+        """Estimate leaf area density with assumption that pulses were directed straight down
+
+        return_type must be one of 'numpy', 'polars', or 'xarray'"""
+        import pdal
+        import numpy as np
+        from voxelmon.utils import bin3D
+        import polars as pl
+        count = 10
+        result = 0
+        while result == 0 and count <100:
+            try:
+                pipeline = pdal.Pipeline([pdal.Reader(self.path),pdal.Filter.hag_delaunay(count=count)])
+                result = pipeline.execute()
+            except:
+                count*=2
+
+        arr = pipeline.arrays[0]
+        arr = np.column_stack((arr['X'],arr['Y'],arr['HeightAboveGround']))
+        arr[arr[:,2]<0,2] = 0 # Assign negative heights to 0
+
+        arr[:,2] -= min_height
+
+        counts = bin3D(arr,pl.len(),[bin_size_xy,bin_size_xy,bin_size_z],asArray=False)
+        counts = counts.fill_nan(0).fill_null(0)
+        grid_shape = [counts['xBin'].n_unique(),counts['yBin'].n_unique(),counts['zBin'].n_unique()]
+        counts_grid = counts[:, -1].to_numpy().reshape(grid_shape, order='f')
+
+        counts_cs = counts_grid.cumsum(axis=2)
+        pulses_in = counts_cs[:,:,1:]
+        pulses_out = counts_cs[:,:,:-1]
+        lad = -np.log(pulses_out/pulses_in)/(extinction_coefficient*bin_size_z)
+        lad[pulses_in==0] = -1
+        lad[pulses_out==0] = -2
+
+        x_centers = counts['xBin'].unique() * bin_size_xy + bin_size_xy / 2
+        y_centers = counts['yBin'].unique() * bin_size_xy + bin_size_xy / 2
+        z_centers = counts['zBin'].unique()[1:] * bin_size_z + bin_size_z / 2 + min_height
+
+        if return_type == 'numpy':
+            return lad
+        elif return_type == 'polars':
+            z, y, x = np.meshgrid(z_centers,y_centers,x_centers, indexing='ij')
+            return pl.DataFrame({'X':x.flatten(),'Y': y.flatten(), 'Z':z.flatten(),'LAD':lad.flatten('F')})
+        elif return_type == 'xarray':
+            import xarray as xr
+            return xr.DataArray(lad,coords={'X':x_centers,'Y':y_centers,'Z':z_centers},dims=['X','Y','Z'],name='LAD')
 
 
 class PtxBlk360G1:
