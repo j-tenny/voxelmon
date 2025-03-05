@@ -1,5 +1,4 @@
 import numpy as np
-import laspy
 import pyvista
 import polars
 import os
@@ -11,9 +10,12 @@ from pathlib import Path
 from tkinter import ttk
 
 
-grid_path = 'D:/DataWork/pypadResults/PAD/T1123060802.csv'
+#grid_path = 'D:/DataWork/pypadResults/PAD/T1423070502.csv'
+grid_path = 'D:/DataWork/pypadResults/PAD/T1423081501.csv'
 #grid_path = 'D:/DataWork/SanCarlos/Pre/PAD/AZSCA_0018_2022_06301159.csv'
-
+#clip_extents = 'auto'
+clip_extents = [-11.3,-.5,11.3,.5]
+#clip_extents = [-.5,-11.3,.5,11.3] # [minx, miny, minz, maxx, maxy, maxz], [minx, miny, maxx, maxy] or 'auto'
 grid_path=Path(grid_path)
 basename = grid_path.name
 dem_path = Path('/'.join(grid_path.parts[:-2]) + '/DEM/' + basename)
@@ -22,23 +24,46 @@ points_path = Path('/'.join(grid_path.parts[:-2])+'/Points/'+basename)
 
 
 
-def visualizeVoxels(grid_path, points_path, dem_path, value_name = 'pad', max_value = 6, color_map=['#386404','#386404','#386404','#386404','#386404', '#386404', '#4E3118']):
+def visualizeVoxels(grid_path, points_path, dem_path, clip_extents = 'auto', value_name = 'pad', max_value = 6,
+                    color_map=['#386404','#386404','#386404','#386404','#386404', '#386404', '#4E3118']):
 
     global pl,pts_fill_actor,pts_fill_actor_leaf,pts_fill_actor_wood,pts_occluded_actor, filled_values
 
     grid = polars.read_csv(grid_path)
     cellSize = round(grid[1,0]-grid[0,0],5)
-    extents = np.concatenate([grid[:,0:3].min().to_numpy().flatten(), grid[:,0:3].max().to_numpy().flatten()])
-    shape = ((extents[3:6] - extents[0:3]) // cellSize).astype(int) + 2
+
+    if clip_extents == 'auto':
+        extents = np.concatenate([grid[:,0:3].min().to_numpy().flatten(), grid[:,0:3].max().to_numpy().flatten()])
+    else:
+        if len(clip_extents)==4:
+            extents = np.concatenate([grid[:, 0:3].min().to_numpy().flatten(), grid[:, 0:3].max().to_numpy().flatten()])
+            extents[0:2] = clip_extents[0:2]
+            extents[3:5] = clip_extents[2:4]
+        elif len(clip_extents)==6:
+            extents = np.array(clip_extents)
+        else:
+            raise ValueError("clip_extents needs to be 'auto' or a list of 4 or 6 floats")
+
+    grid = grid.filter((grid[:, 0] >= extents[0]) & (grid[:, 0] <= extents[3]) &
+                        (grid[:, 1] >= extents[1]) & (grid[:, 1] <= extents[4]) &
+                        (grid[:, 2] >= extents[2]) & (grid[:, 2] <= extents[5]))
+
     points = polars.read_csv(points_path).to_numpy()
+    points = points[(points[:, 0] >= extents[0]) & (points[:, 0] <= extents[3]) &
+                    (points[:, 1] >= extents[1]) & (points[:, 1] <= extents[4])]
+
+    pts_all = pyvista.PolyData(points[:, :3])
     demPoints = polars.read_csv(dem_path).to_numpy()
+    demPoints = demPoints[(demPoints[:, 0] >= extents[0]) & (demPoints[:, 0] <= extents[3]) &
+                          (demPoints[:, 1] >= extents[1]) & (demPoints[:, 1] <= extents[4])]
+
+    shape = ((demPoints.max(0) - demPoints.min(0)) / cellSize).round().astype(int) + 1
 
     dem = pyvista.StructuredGrid(demPoints[:,0].reshape(shape[0:2]),
                                  demPoints[:,1].reshape(shape[0:2]),
                                  demPoints[:,2].reshape(shape[0:2])).texture_map_to_plane()
 
-    points = points[(points[:,0]>=extents[0]) & (points[:,0]<=extents[3]) & (points[:,1]>=extents[1]) & (points[:,1]<=extents[4])]
-    pts_all = pyvista.PolyData(points[:,:3])
+
 
     filled_pts = pyvista.PolyData(grid.filter((polars.col('classification')>0) & (polars.col('hag')>=.1))[:,:3].to_numpy())
     filled_values = grid.filter((polars.col('classification')>0) & (polars.col('hag')>=.1))[value_name].to_numpy()
@@ -110,4 +135,4 @@ def visualizeVoxels(grid_path, points_path, dem_path, value_name = 'pad', max_va
     #pl.export_gltf('vistest.gltf')
     #pl.export_html('vistest.html')
 
-visualizeVoxels(grid_path,points_path,dem_path,value_name='pad')
+visualizeVoxels(grid_path,points_path,dem_path, clip_extents=clip_extents, value_name='pad')
