@@ -585,8 +585,9 @@ class Pulses:
         df.write_csv(filepath)
 
 class ALS:
-    def __init__(self,filepath):
+    def __init__(self,filepath, bounds = None):
         self.path = filepath
+        self.bounds = bounds
 
     def quick_lad(self,bin_size_xy = 10, bin_size_z = 2, min_height = 1, extinction_coefficient=.5, return_type='polars'):
         """Estimate leaf area density with assumption that pulses were directed straight down
@@ -600,7 +601,10 @@ class ALS:
         result = 0
         while result == 0 and count <100:
             try:
-                pipeline = pdal.Pipeline([pdal.Reader(self.path),pdal.Filter.hag_delaunay(count=count)])
+                if self.bounds is not None:
+                    pipeline = pdal.Pipeline([pdal.Reader(self.path,bounds=self.bounds),pdal.Filter.hag_delaunay(count=count)])
+                else:
+                    pipeline = pdal.Pipeline([pdal.Reader(self.path), pdal.Filter.hag_delaunay(count=count)])
                 result = pipeline.execute()
             except:
                 count*=2
