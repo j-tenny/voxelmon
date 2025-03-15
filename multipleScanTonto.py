@@ -24,7 +24,7 @@ def main():
 
     input_folder = '../TontoNF/TLS/PTX/AllScans/' # Folder containing scans in .PTX format
     keyword = 'Med Density 1' # Keyword used to filter selected scans from other files. Just want the center scan here.
-    export_folder = 'D:/DataWork/pypadResultsMulti/' # Root folder for results
+    export_folder = 'D:/DataWork/TontoFinalResultsMulti/' # Root folder for results
     biomass = pd.read_csv('C:\\Users\\john1\\OneDrive - Northern Arizona University\\Work\\TontoNF\\AZ_CanProf_Output.csv') # Conventional estimates of canopy bulk density by species group by height bin by plot. Produced by BuildCanopyProfile.R
     biomass_classes = list(biomass.columns[2:-1]) # Names of the species groups used in biomass estimates
     surface_biomass = pd.read_csv('C:\\Users\\john1\\OneDrive - Northern Arizona University\\Work\\TontoNF\\SubplotBiomassEstimates.csv') # Estimated surface fuels by fuel component by subplot by plot
@@ -66,6 +66,7 @@ def main():
         from sklearn.linear_model import LinearRegression
         from sklearn import metrics
         import numpy as np
+        import statsmodels.api as sm
         y_pred = pd.DataFrame(y_pred).to_numpy()
         y_obs = pd.DataFrame(y_obs).to_numpy()
         if refit:
@@ -79,6 +80,7 @@ def main():
         r2 = metrics.r2_score(y_obs, y_pred)
         rmse = metrics.root_mean_squared_error(y_obs, y_pred)
         mae = metrics.mean_absolute_error(y_obs, y_pred)
+        mean_error = (y_pred - y_obs).mean()
 
         m = y_obs.mean()
         rrmse = rmse / m
@@ -87,15 +89,20 @@ def main():
         wmape = np.abs((y_obs - y_pred)).sum() / y_obs.sum()
         wmpe = (y_obs - y_pred).sum() / y_obs.sum()
 
+        y_obs = sm.add_constant(y_obs)
+        pvalue = sm.OLS(y_pred, y_obs).fit().pvalues[1]
+
         if print_output:
+            print('p-value: ', pvalue)
             print('R^2: ', r2)
             print('RMSE: ', rmse)
             print('RRMSE: ', rrmse)  # relative rmse
-            print('MAE: ', mae)
+            print('MeanError: ',mean_error)
+            #print('MAE: ', mae)
             print('MeanObs: ', m)  # mean of observed values
-            print('MAPE: ', mape)  # mean absolute percent error
-            print('WMAPE: ', wmape)  # mean absolute percent error weighted by y_obs
-            print('WMPE: ', wmpe)  # mean percent error weighted by y_obs
+            #print('MAPE: ', mape)  # mean absolute percent error
+            #print('WMAPE: ', wmape)  # mean absolute percent error weighted by y_obs
+            #print('WMPE: ', wmpe)  # mean percent error weighted by y_obs
             print()
         return {'r2': r2, 'rmse': rmse, 'rrmse': rrmse}
 

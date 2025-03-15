@@ -24,7 +24,7 @@ def main():
 
     input_folder = '../TontoNF/TLS/PTX/AllScans/' # Folder containing scans in .PTX format
     keyword = 'Med Density 1' # Keyword used to filter selected scans from other files. Just want the center scan here.
-    export_folder = 'D:/DataWork/pypadResults/' # Root folder for results
+    export_folder = 'D:/DataWork/TontoFinalResultsSingle/' # Root folder for results
     biomass = pd.read_csv('C:\\Users\\john1\\OneDrive - Northern Arizona University\\Work\\TontoNF\\AZ_CanProf_Output.csv') # Conventional estimates of canopy bulk density by species group by height bin by plot. Produced by BuildCanopyProfile.R
     biomass_classes = list(biomass.columns[2:-1]) # Names of the species groups used in biomass estimates
     surface_biomass = pd.read_csv('C:\\Users\\john1\\OneDrive - Northern Arizona University\\Work\\TontoNF\\SubplotBiomassEstimates.csv') # Estimated surface fuels by fuel component by subplot by plot
@@ -63,6 +63,7 @@ def main():
         from sklearn.linear_model import LinearRegression
         from sklearn import metrics
         import numpy as np
+        import statsmodels.api as sm
         y_pred = pd.DataFrame(y_pred).to_numpy()
         y_obs = pd.DataFrame(y_obs).to_numpy()
         if refit:
@@ -85,7 +86,11 @@ def main():
         wmape = np.abs((y_obs - y_pred)).sum() / y_obs.sum()
         wmpe = (y_obs - y_pred).sum() / y_obs.sum()
 
+        y_obs = sm.add_constant(y_obs)
+        pvalue = sm.OLS(y_pred, y_obs).fit().pvalues[1]
+
         if print_output:
+            print('p-value: ', pvalue)
             print('R^2: ', r2)
             print('RMSE: ', rmse)
             print('RRMSE: ', rrmse)  # relative rmse
@@ -617,6 +622,7 @@ def main():
                 ax.set_xlabel(variance_predictors.columns[i])
                 ax.set_ylabel('Residual')
                 plt.title(f"Partial Dependence of Bias in {col_pred}")
+                plt.savefig(f"{export_folder}/GAM_results/pd_bias_{col_pred}_{variance_predictors.columns[i]}.png")
                 plt.show()
 
             for i, term in enumerate(gam_variance.terms):
@@ -634,10 +640,11 @@ def main():
                 ax.set_xlabel(variance_predictors.columns[i])
                 ax.set_ylabel('Squared Residual')
                 plt.title(f"Partial Dependence of Variance in {col_pred}")
+                plt.savefig(f"{export_folder}/GAM_results/pd_var_{col_pred}_{variance_predictors.columns[i]}.png")
                 plt.show()
 
 
-        terrain_stats = directory_to_pandas('D:/DataWork/pypadResultsMulti/Plot_Summary')
+        terrain_stats = directory_to_pandas('D:/DataWork/TontoFinalResultsMulti/Plot_Summary')
         results = results.merge(terrain_stats,on = 'plot_id')
         results['resid'] = results['biomassPred'] - results['biomass']
         results['resid_sq'] = results['resid']**2
@@ -666,6 +673,19 @@ def main():
         plot_bias_var_partial_dependence(results_plot, 'LOAD_DOWNED_PRED', 'LOAD_DOWNED', variance_predictors_names)
         variance_predictors_names = ['occluded_surface', 'biomass_sum', 'terrain_slope', 'terrain_concavity','terrain_roughness']
         plot_bias_var_partial_dependence(results_plot, 'LOAD_STANDING_PRED', 'LOAD_STANDING', variance_predictors_names)
+
+        # Calculate correlation between factors
+        plot_corr = results_plot[['biomass_max', 'biomass_sum', 'biomassPred_max', 'biomassPred_sum', 'occluded_mean',
+                                  'terrain_slope', 'terrain_aspect', 'terrain_concavity', 'terrain_roughness',
+                                  'LOAD_DOWN_WOODY', 'LOAD_LITTER', 'LOAD_STANDING', 'LOAD_TOTAL_SURFACE', 'LOAD_DOWNED',
+                                  'foliage_canopy', 'pad_canopy', 'canopy_cover', 'pai', 'foliage_surface',
+                                  'occluded_surface', 'pad_surface', 'LOAD_DOWNED_PRED', 'LOAD_STANDING_PRED']].corr()
+        bin_corr = results[['height', 'foliage', 'empty', 'occluded', 'nonfoliage',
+                           'OS', 'ARPU', 'OT', 'JUNIPER', 'PINE', 'cbd_total','pad', 'biomassPred', 'biomass',
+                           'canopy_cover', 'terrain_slope', 'terrain_aspect', 'terrain_concavity', 'terrain_roughness',
+                           'resid', 'resid_sq']].corr()
+        plot_corr.to_csv(f"{export_folder}/GAM_results/corr_plot.csv")
+        bin_corr.to_csv(f"{export_folder}/GAM_results/corr_bin.csv")
 
 
 if __name__ == '__main__':
