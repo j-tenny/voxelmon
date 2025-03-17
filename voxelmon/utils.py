@@ -125,12 +125,31 @@ def bin3D(pulses, function, cellSize,asArray = True, binExtents=None):
     else:
         return result
 
-def open_file_pdal(filepath):
+def open_file_pdal(filepath,bounds=None,calculate_height=True):
     import pdal
     import polars as pl
-    pipeline = pdal.Pipeline(f"[\"{filepath}\"]")
-    pipeline.execute()
-    return pl.DataFrame(pipeline.arrays[0])
+
+    result=0
+    if calculate_height:
+        count = 10
+        while result == 0 and count < 100:
+            try:
+                if bounds is not None:
+                    pipeline = pdal.Pipeline([pdal.Reader(filepath, bounds=bounds),
+                                              pdal.Filter.hag_delaunay(count=count)])
+                else:
+                    pipeline = pdal.Pipeline([pdal.Reader(filepath), pdal.Filter.hag_delaunay(count=count)])
+                result = pipeline.execute()
+            except:
+                count *= 2
+    else:
+        if bounds is not None:
+            pipeline = pdal.Pipeline([pdal.Reader(filepath, bounds=bounds)])
+        else:
+            pipeline = pdal.Pipeline([pdal.Reader(filepath)])
+        pipeline.execute()
+
+    return pl.DataFrame(pipeline.arrays[0]), pipeline.srswkt2
 
 
 def is_noise_ivf(pulses,voxelSize=1,windowSize=3,minPointCount=200):

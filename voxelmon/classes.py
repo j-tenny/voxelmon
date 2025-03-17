@@ -586,8 +586,115 @@ class Pulses:
 
 class ALS:
     def __init__(self,filepath, bounds = None):
+        from voxelmon.utils import open_file_pdal
         self.path = filepath
         self.bounds = bounds
+        self.points, self.crs = open_file_pdal(self.path, self.bounds)
+
+    def estimate_flightpath(self, min_separation=2, time_bin_size=.5, fit_line=True, min_z_q = .75, flightline_t_break=5):
+        import pdal
+        import polars
+        import numpy as np
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+        from numba import njit, prange
+        from sklearn.linear_model import LinearRegression
+
+        self.points = self.points.sort(['GpsTime','ReturnNumber'])
+
+        def split_flightlines(points):
+            gps_time_arr = points['GpsTime'].to_numpy()
+            point_views = []
+            prev_i = 0
+            for i in range(1,len(gps_time_arr)):
+                if (gps_time_arr[i] - gps_time_arr[i-1]) > flightline_t_break:
+                    point_views.append(points[prev_i:i,:])
+                    prev_i = i
+            point_views.append(points[prev_i:,:])
+            return point_views
+
+        points_views = split_flightlines(self.points)
+
+        def get_convergence_points(points):
+            points_all = points[['X','Y','Z']].to_numpy()
+            return_number_all = points['ReturnNumber'].to_numpy()
+            gps_time = points['GpsTime'].to_numpy()
+            start_time = gps_time.min()
+            end_time = gps_time.max()
+            flight_points = []
+            for time in np.arange(start_time,end_time+time_bin_size, time_bin_size):
+                time_mask = (gps_time >= time) & (gps_time < time + time_bin_size)
+                points_arr = points_all[time_mask]
+                return_number = return_number_all[time_mask]
+                first = []
+                last = []
+                count = 0
+                first_temp = np.array([np.nan,np.nan,np.nan])
+                for i in range(len(return_number)):
+                    if return_number[i] == 1:
+                        if count > 1:
+                            first.append(first_temp)
+                            last.append(points_arr[i-1,:])
+                        first_temp = points_arr[i,:]
+                        count = 1
+                    else:
+                        count += 1
+
+                if len(first) > 1:
+                    first = np.array(first)
+                    last = np.array(last)
+
+                    dif = first - last
+                    length = (dif ** 2).sum(1) ** .5
+                    dif = dif[length>=min_separation,:]
+                    origin = last[length>=min_separation,:]
+                    length = length[length>=min_separation]
+                    dir = dif / np.repeat(length,3).reshape([len(length),3])
+                    extreme_z = np.quantile(dir[:,2], [.1,0.9])
+                    extreme_mask = (dir[:,2] <= extreme_z[0]) | (dir[:,2] >= extreme_z[1])
+                    origin_extreme = origin[extreme_mask,:]
+                    dir_extreme = dir[extreme_mask,:]
+
+                    A = np.zeros((3, 3))
+                    b = np.zeros(3)
+
+                    for o, d in zip(origin_extreme, dir_extreme):
+                        d = d.reshape(3, 1)
+                        P = np.eye(3) - d @ d.T  # Projection matrix
+                        A += P
+                        b += P @ o
+
+                    p, residuals, rank, s = np.linalg.lstsq(A, b, rcond=None)
+                    p = np.hstack([p,time])
+                    flight_points.append(p)
+            points = np.stack(flight_points)
+            points = points[points[:,2]>=np.quantile(points[:,2],min_z_q),:]
+            if fit_line:
+                lmx = LinearRegression().fit(points[:,3].reshape(-1,1),points[:, 0].reshape(-1, 1))
+                lmy = LinearRegression().fit(points[:, 3].reshape(-1, 1), points[:, 1].reshape(-1, 1))
+                #lmz = LinearRegression().fit(points[:, 3].reshape(-1, 1), points[:, 2].reshape(-1, 1))
+                gps_time_out = np.linspace(gps_time.min(),gps_time.max(),100).reshape(-1,1)
+                x = lmx.predict(gps_time_out)
+                y = lmy.predict(gps_time_out)
+                #z = lmz.predict(gps_time_out)
+                z = np.ones_like(x) * points[:, 2].mean()
+                points = np.concatenate([x,y,z,gps_time_out],axis=1)
+
+
+            return points
+
+        flightlines = []
+        with ThreadPoolExecutor() as executor:
+        #for view in points_views:
+        #    flightlines.append(get_convergence_points(view))
+            flightlines = list(executor.map(get_convergence_points, points_views))
+
+
+        for i in range(len(flightlines)):
+            flight_points = flightlines[i]
+            flightlines[i] = polars.DataFrame({'X':flight_points[:,0],'Y':flight_points[:,1], 'Z':flight_points[:,2],
+                                              'GpsTime':flight_points[:,3],'FlightLine':i})
+        return polars.concat(flightlines)
 
     def quick_lad(self,bin_size_xy = 10, bin_size_z = 2, min_height = 1, extinction_coefficient=.5, return_type='polars'):
         """Estimate leaf area density with assumption that pulses were directed straight down
