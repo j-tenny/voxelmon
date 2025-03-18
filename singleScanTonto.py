@@ -58,7 +58,7 @@ def main():
         else:
             return 'PPO'
 
-    def score(y_obs, y_pred, print_output=True, refit=True):
+    def score(y_obs, y_pred, print_output=True):
         # Generate model scoring metrics for model comparison
         from sklearn.linear_model import LinearRegression
         from sklearn import metrics
@@ -66,40 +66,30 @@ def main():
         import statsmodels.api as sm
         y_pred = pd.DataFrame(y_pred).to_numpy()
         y_obs = pd.DataFrame(y_obs).to_numpy()
-        if refit:
-            lm = LinearRegression()
-            lm = lm.fit(y_pred, y_obs)
-            y_pred = lm.predict(y_pred)
-
-        y_obs = y_obs.flatten()
-        y_pred = y_pred.flatten()
-
-        r2 = metrics.r2_score(y_obs, y_pred)
-        rmse = metrics.root_mean_squared_error(y_obs, y_pred)
-        mae = metrics.mean_absolute_error(y_obs, y_pred)
         mean_error = (y_pred - y_obs).mean()
-
+        mse = ((y_pred - y_obs)**2).mean()
+        bias_sq = mean_error**2
+        variance = mse - bias_sq
+        rmse = mse**.5
         m = y_obs.mean()
         rrmse = rmse / m
 
-        mape = np.abs((y_obs - y_pred) / y_obs).mean()
-        wmape = np.abs((y_obs - y_pred)).sum() / y_obs.sum()
-        wmpe = (y_obs - y_pred).sum() / y_obs.sum()
-
         y_obs = sm.add_constant(y_obs)
-        pvalue = sm.OLS(y_pred, y_obs).fit().pvalues[1]
+        lm = sm.OLS(y_pred, y_obs).fit()
+        pvalue = lm.pvalues[1]
+        r2 = lm.rsquared
+
 
         if print_output:
             print('p-value: ', pvalue)
             print('R^2: ', r2)
             print('RMSE: ', rmse)
-            print('RRMSE: ', rrmse)  # relative rmse
-            print('MeanError: ',mean_error)
-            #print('MAE: ', mae)
             print('MeanObs: ', m)  # mean of observed values
-            #print('MAPE: ', mape)  # mean absolute percent error
-            #print('WMAPE: ', wmape)  # mean absolute percent error weighted by y_obs
-            #print('WMPE: ', wmpe)  # mean percent error weighted by y_obs
+            print('RRMSE: ', rrmse)  # relative rmse
+            print('MSE', mse)
+            print('Bias: ',mean_error)
+            print('BiasSq: ',bias_sq)
+            print('Variance: ', variance)
             print()
         return {'r2': r2, 'rmse': rmse, 'rrmse': rrmse}
 
@@ -179,7 +169,7 @@ def main():
     # Summarize conventional surface fuel load estimates by plot
     surface_biomass_plot = surface_biomass.pivot_table(index='PLOT_NAME',
                                                        values=['LOAD_LITTER', 'LOAD_DOWN_WOODY', 'LOAD_STANDING',
-                                                            'LOAD_TOTAL_SURFACE'], aggfunc='mean')
+                                                               'LOAD_TOTAL_SURFACE'], aggfunc='mean')
 
     # Combine litter and downed woody debris
     surface_biomass_plot['LOAD_DOWNED'] = surface_biomass_plot['LOAD_LITTER'] + surface_biomass_plot['LOAD_DOWN_WOODY']
@@ -208,7 +198,6 @@ def main():
     # Model standing (live) surface fuel load as a function of near-surface plant area density
     lm_standing = smf.ols('LOAD_STANDING ~ pad_surface', surface_biomass_plot).fit()
     print(lm_standing.summary())
-    #print('RMSE = ', (lm_standing.resid ** 2).mean() ** .5)
     surface_biomass_plot['LOAD_STANDING_PRED'] = lm_standing.fittedvalues
 
     print('All veg types:')
@@ -272,11 +261,6 @@ def main():
     df_all = df_all[~(df_all['plot_id'].isin(outliers))]
     df_all = calculate_species_proportions(df_all,biomass_classes,'cbd_total')
     df_all['biomassPred'] = 0.0
-
-    # Transform pad data
-    #lm = smf.ols('TOTAL~pad',df_all).fit()
-    #df_all['pad'] -= lm.params.iloc[0]/2
-
 
     # Train model
     results = []
@@ -396,47 +380,47 @@ def main():
     # Print accuracy results
 
     print("Canopy fuel load (all veg types)")
-    score_cfl = score(results_plot['biomass', 'sum'], results_plot['biomassPred', 'sum'], refit=True)
+    score_cfl = score(results_plot['biomass', 'sum'], results_plot['biomassPred', 'sum'])
 
     print("Max CBD (all veg types)")
-    score_cbd = score(results_plot['biomass', 'max'], results_plot['biomassPred', 'max'], refit=True)
+    score_cbd = score(results_plot['biomass', 'max'], results_plot['biomassPred', 'max'])
 
 
     print("Canopy fuel load (CHAP only)")
     results_plot_filter = results_plot[results_plot['veg_type']=='CHAP']
-    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'], refit=True)
+    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'])
     print("Max CBD (CHAP only)")
-    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'], refit=True)
+    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'])
 
     print("Canopy fuel load (PJO only)")
     results_plot_filter = results_plot[results_plot['veg_type']=='PJO']
-    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'], refit=True)
+    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'])
     print("Max CBD (PJO only)")
-    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'], refit=True)
+    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'])
 
     print("Canopy fuel load (PPO only)")
     results_plot_filter = results_plot[results_plot['veg_type']=='PPO']
-    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'], refit=True)
+    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'])
     print("Max CBD (PPO only)")
-    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'], refit=True)
+    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'])
 
     print("Canopy fuel load (CHAP + PJO only)")
     results_plot_filter = results_plot[results_plot['veg_type']!='PPO']
-    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'], refit=True)
+    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'])
     print("Max CBD (CHAP + PJO only)")
-    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'], refit=True)
+    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'])
 
     print("Canopy fuel load (CHAP + PPO only)")
     results_plot_filter = results_plot[results_plot['veg_type']!='PJO']
-    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'], refit=True)
+    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'])
     print("Max CBD (CHAP + PPO only)")
-    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'], refit=True)
+    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'])
 
     print("Canopy fuel load (PJO + PPO only)")
     results_plot_filter = results_plot[results_plot['veg_type']!='CHAP']
-    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'], refit=True)
+    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'])
     print("Max CBD (PJO + PPO only)")
-    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'], refit=True)
+    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'])
 
 
     # Produce regression accuracy plots for total canopy fuel load and max canopy bulk density

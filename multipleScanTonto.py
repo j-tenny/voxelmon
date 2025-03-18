@@ -31,7 +31,7 @@ def main():
     profile_smoothing_factor = .005 # Value used as input to voxelmon.utils.smooth() when smoothing profiles
     feature = 'pad' # Can be 'pad' to train model with plant area density or 'foliage' to train model with foliage volume
     prior_mean = np.array([0.141,0.28,0.141,0.49,.333])
-    prior_std = prior_mean*.1
+    prior_std = prior_mean*.05
     sigma_residuals = 1
     sigma_intercept = .005
     fit_intercept = False
@@ -61,7 +61,7 @@ def main():
         id = filepath.name.split('-')[0]
         return id
 
-    def score(y_obs, y_pred, print_output=True, refit=True):
+    def score(y_obs, y_pred, print_output=True):
         # Generate model scoring metrics for model comparison
         from sklearn.linear_model import LinearRegression
         from sklearn import metrics
@@ -69,40 +69,30 @@ def main():
         import statsmodels.api as sm
         y_pred = pd.DataFrame(y_pred).to_numpy()
         y_obs = pd.DataFrame(y_obs).to_numpy()
-        if refit:
-            lm = LinearRegression()
-            lm = lm.fit(y_pred, y_obs)
-            y_pred = lm.predict(y_pred)
-
-        y_obs = y_obs.flatten()
-        y_pred = y_pred.flatten()
-
-        r2 = metrics.r2_score(y_obs, y_pred)
-        rmse = metrics.root_mean_squared_error(y_obs, y_pred)
-        mae = metrics.mean_absolute_error(y_obs, y_pred)
         mean_error = (y_pred - y_obs).mean()
-
+        mse = ((y_pred - y_obs)**2).mean()
+        bias_sq = mean_error**2
+        variance = mse - bias_sq
+        rmse = mse**.5
         m = y_obs.mean()
         rrmse = rmse / m
 
-        mape = np.abs((y_obs - y_pred) / y_obs).mean()
-        wmape = np.abs((y_obs - y_pred)).sum() / y_obs.sum()
-        wmpe = (y_obs - y_pred).sum() / y_obs.sum()
-
         y_obs = sm.add_constant(y_obs)
-        pvalue = sm.OLS(y_pred, y_obs).fit().pvalues[1]
+        lm = sm.OLS(y_pred, y_obs).fit()
+        pvalue = lm.pvalues[1]
+        r2 = lm.rsquared
+
 
         if print_output:
             print('p-value: ', pvalue)
             print('R^2: ', r2)
             print('RMSE: ', rmse)
-            print('RRMSE: ', rrmse)  # relative rmse
-            print('MeanError: ',mean_error)
-            #print('MAE: ', mae)
             print('MeanObs: ', m)  # mean of observed values
-            #print('MAPE: ', mape)  # mean absolute percent error
-            #print('WMAPE: ', wmape)  # mean absolute percent error weighted by y_obs
-            #print('WMPE: ', wmpe)  # mean percent error weighted by y_obs
+            print('RRMSE: ', rrmse)  # relative rmse
+            print('MSE', mse)
+            print('Bias: ',mean_error)
+            print('BiasSq: ',bias_sq)
+            print('Variance: ', variance)
             print()
         return {'r2': r2, 'rmse': rmse, 'rrmse': rrmse}
 
@@ -178,19 +168,16 @@ def main():
                                                                'LOAD_TOTAL_SURFACE'], aggfunc='mean')
 
     # Combine litter and downed woody debris
-    surface_biomass_plot['LOAD_DOWNED'] = surface_biomass_plot['LOAD_LITTER'] + surface_biomass_plot[
-        'LOAD_DOWN_WOODY']
+    surface_biomass_plot['LOAD_DOWNED'] = surface_biomass_plot['LOAD_LITTER'] + surface_biomass_plot['LOAD_DOWN_WOODY']
 
     # Summarize TLS data by plot (height .1m to top of canopy)
-    plot_canopy = df_all[df_all['height'] >= .1].pivot_table(index='plot_id',
-                                                             aggfunc={'veg_type': 'first', 'foliage': 'sum',
-                                                                      'pad': 'sum'})
+    plot_canopy = df_all[df_all['height'] >= .1].pivot_table(index='plot_id', aggfunc={'veg_type': 'first', 'foliage': 'sum', 'pad': 'sum'})
     # Calculate plant area index (sum of plant area density profile * height bin size)
     plot_canopy['pai'] = plot_canopy['pad'] * cell_size
 
     # Summarize TLS data by plot (height .1m to 1m
     plot_surface = df_all[(df_all['height'] >= .1) & (df_all['height'] < 1)].pivot_table(index='plot_id',
-                                                                                         values=['foliage', 'pad'],
+                                                                                         values=['foliage', 'pad','occluded'],
                                                                                          aggfunc='mean')
     # Merge conventional surface fuel estimates, TLS canopy metrics, TLS surface metrics
     surface_biomass_plot = surface_biomass_plot.join(plot_canopy)
@@ -200,14 +187,11 @@ def main():
     # Model downed woody debris as a function of canopy plant area index by vegetation type
     lm_downed = smf.ols('LOAD_DOWNED ~ pai:veg_type', surface_biomass_plot).fit()
     surface_biomass_plot['LOAD_DOWNED_PRED'] = lm_downed.fittedvalues
-    print(lm_downed.summary())
-    print('RMSE = ', (lm_downed.resid ** 2).mean() ** .5)
 
     # Model standing (live) surface fuel load as a function of near-surface plant area density
     lm_standing = smf.ols('LOAD_STANDING ~ pad_surface', surface_biomass_plot).fit()
-    surface_biomass_plot['LOAD_STANDING_PRED'] = lm_standing.fittedvalues
     print(lm_standing.summary())
-    print('RMSE = ', (lm_standing.resid ** 2).mean() ** .5)
+    surface_biomass_plot['LOAD_STANDING_PRED'] = lm_standing.fittedvalues
 
     print('All veg types:')
     surface_biomass_plot_f = surface_biomass_plot
@@ -239,8 +223,7 @@ def main():
 
     # Produce surface fuel regression figures
     f, [ax1, ax2] = plt.subplots(ncols=2, constrained_layout=True, figsize=[7, 4])
-    sns.scatterplot(surface_biomass_plot, x='pai', y='LOAD_DOWNED', hue='veg_type',
-                    palette=['orange', 'green', 'blue'],
+    sns.scatterplot(surface_biomass_plot, x='pai', y='LOAD_DOWNED', hue='veg_type', palette=['orange', 'green', 'blue'],
                     ax=ax1)
     sns.scatterplot(surface_biomass_plot, x='pad_surface', y='LOAD_STANDING', hue='veg_type',
                     palette=['orange', 'green', 'blue'], ax=ax2)
@@ -249,28 +232,27 @@ def main():
     ax1.axline((0, lm_downed.params.iloc[0]), slope=lm_downed.params.iloc[3], color='blue', linestyle='--')
     ax2.axline((0, lm_standing.params.iloc[0]), slope=lm_standing.params.iloc[1], color='black', linestyle='--')
     f.tight_layout(pad=.5, w_pad=2.5)
-    ax1.legend(loc='lower right')
-    ax2.legend(loc='lower right')
+    ax1.legend(loc='lower right',title='Veg Type')
+    ax2.legend(loc='lower right',title='Veg Type')
     ax1.set_xlabel('LAI ($m^2$/$m^2$)')
     ax1.set_ylabel('Downed Surface Fuel Load (kg/$m^2$)')
-    ax1.text(.05, .93, '$R^2$ = ' + str(lm_downed.rsquared.round(2)), transform=ax1.transAxes)
-    ax1.text(.05, .88, 'RMSE = ' + str(((lm_downed.resid ** 2).mean() ** .5).round(2)) + ' kg/$m^2$',
-             transform=ax1.transAxes)
+    ax1.text(.05,.93,'$R^2$ = ' + str(lm_downed.rsquared.round(2)),transform=ax1.transAxes)
+    ax1.text(.05,.88,'RMSE = ' + str(((lm_downed.resid ** 2).mean() ** .5).round(2))+ ' kg/$m^2$',transform=ax1.transAxes)
     ax2.set_xlabel('Surface LAD ($m^2$/$m^3$)')
     ax2.set_ylabel('Standing Surface Fuel Load (kg/$m^2$)')
-    ax2.text(.05, .93, '$R^2$ = ' + str(lm_standing.rsquared.round(2)), transform=ax2.transAxes)
-    ax2.text(.05, .88, 'RMSE = ' + str(((lm_standing.resid ** 2).mean() ** .5).round(2)) + ' kg/$m^2$',
-             transform=ax2.transAxes)
+    ax2.text(.05,.93,'$R^2$ = ' + str(lm_standing.rsquared.round(2)),transform=ax2.transAxes)
+    ax2.text(.05,.88,'RMSE = ' + str(((lm_standing.resid ** 2).mean() ** .5).round(2)) + ' kg/$m^2$',transform=ax2.transAxes)
     plt.savefig(export_folder + '\\SurfaceFuelPAD.pdf')
+    plt.savefig(export_folder + '\\SurfaceFuelPAD.png')
     plt.show()
 
-    # %%#####################################################################################################################
+    #%%#####################################################################################################################
     ### MODEL CANOPY FUELS ###
     # Remove surface fuel and outliers
     df_all = df_all[df_all['height'] >= 1]
     outliers = ['T1423071101']
     df_all = df_all[~(df_all['plot_id'].isin(outliers))]
-    df_all = calculate_species_proportions(df_all, biomass_classes, 'cbd_total')
+    df_all = calculate_species_proportions(df_all,biomass_classes,'cbd_total')
     df_all['biomassPred'] = 0.0
 
     # Train model
@@ -300,24 +282,22 @@ def main():
                 model_fitter = BulkDensityProfileModelFitter(train_data, biomass_classes, 'pad', 'cbd_total',
                                                              'height', 'plot_id', 'veg_type',
                                                              profile_smoothing_factor, 1)
-                model_fitter.fit_mass_ratio_bayesian(prior_mean, prior_std, sigma_residuals, sigma_intercept,
-                                                     fit_intercept,
+                model_fitter.fit_mass_ratio_bayesian(prior_mean, prior_std, sigma_residuals, sigma_intercept, fit_intercept,
                                                      two_stage_fit)
                 models = model_fitter.to_models()
                 # Get predictions for test set
                 model = models[veg_type]
-                test_data.loc[:, 'biomassPred'] = model.predict(test_data, 'height', 'pad', 'plot_id')
+                test_data.loc[:,'biomassPred'] = model.predict(test_data,'height', 'pad', 'plot_id')
                 results.append(test_data)
 
             # Train and save final model based on all training data
             model_fitter = BulkDensityProfileModelFitter(df_class, biomass_classes, 'pad', 'cbd_total',
                                                          'height', 'plot_id', 'veg_type',
                                                          profile_smoothing_factor, 1)
-            model_fitter.fit_mass_ratio_bayesian(prior_mean, prior_std, sigma_residuals, sigma_intercept,
-                                                 fit_intercept,
+            model_fitter.fit_mass_ratio_bayesian(prior_mean, prior_std, sigma_residuals, sigma_intercept, fit_intercept,
                                                  two_stage_fit)
             model = model_fitter.to_models()[veg_type]
-            model.to_file(veg_type + '.model')
+            model.to_file(veg_type+'.model')
             print(f'Effective Leaf Area Density {veg_type} Model:')
             print(model_fitter.mass_ratio_dict)
             print()
@@ -341,18 +321,16 @@ def main():
             train_data = df_class[(df_class['plot_id'].isin(train_plots))]
             test_data = df_class[(df_class['plot_id'].isin(test_plots))]
             # Train model on training set
-            model_fitter = BulkDensityProfileModelFitter(train_data, biomass_classes, 'pad', 'cbd_total',
-                                                         'height', 'plot_id', 'veg_type',
-                                                         profile_smoothing_factor, 1)
-            model_fitter.fit_mass_ratio_bayesian(prior_mean, prior_std, sigma_residuals, sigma_intercept,
-                                                 fit_intercept, two_stage_fit)
+            model_fitter = BulkDensityProfileModelFitter(train_data, biomass_classes,'pad','cbd_total',
+                                                  'height','plot_id','veg_type',
+                                                  profile_smoothing_factor, 1)
+            model_fitter.fit_mass_ratio_bayesian(prior_mean,prior_std,sigma_residuals,sigma_intercept,fit_intercept,two_stage_fit)
             models = model_fitter.to_models()
             # Get predictions for test set
             for veg_type in test_data['veg_type'].unique():
                 model = models[veg_type]
-                test_data.loc[test_data['veg_type'] == veg_type, 'biomassPred'] = model.predict(
-                    test_data[test_data['veg_type'] == veg_type],
-                    'height', 'pad', 'plot_id')
+                test_data.loc[test_data['veg_type']==veg_type,'biomassPred'] = model.predict(test_data[test_data['veg_type'] == veg_type],
+                                                                                'height','pad','plot_id')
             results.append(test_data)
         # Train and save final model based on all training data
         model_fitter = BulkDensityProfileModelFitter(df_class, biomass_classes, 'pad', 'cbd_total',
@@ -362,7 +340,7 @@ def main():
                                              two_stage_fit)
         models = model_fitter.to_models()
         for veg_type in models:
-            models[veg_type].to_file(veg_type + '.model')
+            models[veg_type].to_file(veg_type+'.model')
         print('Effective Leaf Area Density Combined Model:')
         print(model_fitter.mass_ratio_dict)
         print()
@@ -370,24 +348,23 @@ def main():
     # Format dataframe with predictions
     results = pd.concat(results)
     results = results.fillna(0)
-    results['biomass'] = results[
-        'cbd_total']  # Conventional estimate of canopy bulk density at a height bin, all species combined
+    results['biomass'] = results['cbd_total'] # Conventional estimate of canopy bulk density at a height bin, all species combined
     plots = results['plot_id'].unique()
 
-    # Write results to csv files (separately for each plot)
+    # For each plot, smooth results and write to file
     for plot in plots:
         plot_filter = results['plot_id'] == plot
         # Smooth observed data as it gets smoothed within model fitting process
-        results.loc[plot_filter, 'biomass'] = smooth(results.loc[plot_filter, 'biomass'], profile_smoothing_factor)
+        results.loc[plot_filter,'biomass'] = smooth(results.loc[plot_filter,'biomass'], profile_smoothing_factor)
         # Write results to csv files (separately for each plot)
-        results.loc[plot_filter, :].to_csv(export_folder + '\\' + 'Final_Profile' + '\\' + plot + '.csv')
+        results.loc[plot_filter,:].to_csv(export_folder + '\\' + 'Final_Profile' + '\\' + plot + '.csv')
 
     # Aggregate canopy bulk density along profile
-    results_plot = results.pivot_table(index='plot_id', aggfunc={'biomass': ['mean', 'max','sum'],
-                                                                 'biomassPred': ['mean', 'max','sum'],
+    results_plot = results.pivot_table(index='plot_id', aggfunc={'biomass': ['mean', 'max', 'sum'],
+                                                                 'biomassPred': ['mean', 'max', 'sum'],
                                                                  'occluded': 'mean'}).reset_index()
 
-    # Calculate total canopy fuel load (integral of profile)
+    # Calculate total canopy fuel load (integral of vertical profile)
     results_plot['biomass', 'sum'] *= cell_size
     results_plot['biomassPred', 'sum'] *= cell_size
 
@@ -396,46 +373,48 @@ def main():
     # Print accuracy results
 
     print("Canopy fuel load (all veg types)")
-    score_cfl = score(results_plot['biomass', 'sum'], results_plot['biomassPred', 'sum'], refit=True)
+    score_cfl = score(results_plot['biomass', 'sum'], results_plot['biomassPred', 'sum'])
 
     print("Max CBD (all veg types)")
-    score_cbd = score(results_plot['biomass', 'max'], results_plot['biomassPred', 'max'], refit=True)
+    score_cbd = score(results_plot['biomass', 'max'], results_plot['biomassPred', 'max'])
+
 
     print("Canopy fuel load (CHAP only)")
-    results_plot_filter = results_plot[results_plot['veg_type'] == 'CHAP']
-    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'], refit=True)
+    results_plot_filter = results_plot[results_plot['veg_type']=='CHAP']
+    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'])
     print("Max CBD (CHAP only)")
-    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'], refit=True)
+    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'])
 
     print("Canopy fuel load (PJO only)")
-    results_plot_filter = results_plot[results_plot['veg_type'] == 'PJO']
-    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'], refit=True)
+    results_plot_filter = results_plot[results_plot['veg_type']=='PJO']
+    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'])
     print("Max CBD (PJO only)")
-    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'], refit=True)
+    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'])
 
     print("Canopy fuel load (PPO only)")
-    results_plot_filter = results_plot[results_plot['veg_type'] == 'PPO']
-    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'], refit=True)
+    results_plot_filter = results_plot[results_plot['veg_type']=='PPO']
+    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'])
     print("Max CBD (PPO only)")
-    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'], refit=True)
+    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'])
 
     print("Canopy fuel load (CHAP + PJO only)")
-    results_plot_filter = results_plot[results_plot['veg_type'] != 'PPO']
-    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'], refit=True)
+    results_plot_filter = results_plot[results_plot['veg_type']!='PPO']
+    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'])
     print("Max CBD (CHAP + PJO only)")
-    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'], refit=True)
+    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'])
 
     print("Canopy fuel load (CHAP + PPO only)")
-    results_plot_filter = results_plot[results_plot['veg_type'] != 'PJO']
-    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'], refit=True)
+    results_plot_filter = results_plot[results_plot['veg_type']!='PJO']
+    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'])
     print("Max CBD (CHAP + PPO only)")
-    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'], refit=True)
+    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'])
 
     print("Canopy fuel load (PJO + PPO only)")
-    results_plot_filter = results_plot[results_plot['veg_type'] != 'CHAP']
-    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'], refit=True)
+    results_plot_filter = results_plot[results_plot['veg_type']!='CHAP']
+    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'])
     print("Max CBD (PJO + PPO only)")
-    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'], refit=True)
+    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'])
+
 
     # Produce regression accuracy plots for total canopy fuel load and max canopy bulk density
     f, [ax1, ax2] = plt.subplots(ncols=2, constrained_layout=True, figsize=[7, 4])
@@ -448,19 +427,21 @@ def main():
     ax1.set_ylim(ax1.get_xlim())
     ax2.set_ylim(ax2.get_xlim())
     f.tight_layout(pad=.5, w_pad=2.5)
-    ax1.legend(loc='lower right')
-    ax2.legend(loc='lower right')
+    ax1.legend(loc='lower right',title='Veg Type')
+    ax2.legend(loc='lower right',title='Veg Type')
     ax1.set_xlabel('Conventional Estimate Canopy Fuel Load (kg/$m^2$)')
     ax1.set_ylabel('Lidar Estimate Canopy Fuel Load (kg/$m^2$)')
-    ax1.text(.05, .93, '$R^2$ = ' + str(round(score_cfl['r2'], 2)), transform=ax1.transAxes)
-    ax1.text(.05, .88, 'RMSE = ' + str(round(score_cfl['rmse'], 2)) + ' kg/$m^2$', transform=ax1.transAxes)
+    ax1.text(.05,.93,'$R^2$ = ' + str(round(score_cfl['r2'], 2)),transform=ax1.transAxes)
+    ax1.text(.05,.88,'RMSE = ' + str(round(score_cfl['rmse'], 2)) + ' kg/$m^2$',transform=ax1.transAxes)
     ax2.set_xlabel('Conventional Estimate $CBD_{max}$ (kg/$m^3$)')
     ax2.set_ylabel('Lidar Estimate $CBD_{max}$ (kg/$m^3$)')
-    ax2.text(.05, .93, '$R^2$ = ' + str(round(score_cbd['r2'], 2)), transform=ax2.transAxes)
-    ax2.text(.05, .88, 'RMSE = ' + str(round(score_cbd['rmse'], 2)) + ' kg/$m^3$', transform=ax2.transAxes)
+    ax2.text(.05,.93,'$R^2$ = ' + str(round(score_cbd['r2'], 2)),transform=ax2.transAxes)
+    ax2.text(.05,.88,'RMSE = ' + str(round(score_cbd['rmse'], 2)) + ' kg/$m^3$',transform=ax2.transAxes)
 
+    plt.savefig(export_folder + '_'.join(['Results', feature, str(cell_size), str(max_occlusion), str(profile_smoothing_factor)]) + '.pdf')
     plt.savefig(export_folder + '_'.join(
-        ['Results', feature, str(cell_size), str(max_occlusion), str(profile_smoothing_factor)]) + '.pdf')
+        ['Results', feature, str(cell_size), str(max_occlusion), str(profile_smoothing_factor)]) + '.png')
+
     plt.show()
 
     if bootstrap_confidence_intervals:
@@ -470,9 +451,9 @@ def main():
         coef_all = []
         for sample_ind in range(nsamples):
             resampled_df = []
-            plot_indices = np.random.randint(0, plots.shape[0], plots.shape[0])
+            plot_indices = np.random.randint(0,plots.shape[0],plots.shape[0])
             for plot_i in plot_indices:
-                resampled_df.append(df_class[df_all['plot_id'] == plots[plot_i]])
+                resampled_df.append(df_class[df_all['plot_id']==plots[plot_i]])
             resampled_df = pd.concat(resampled_df).reset_index(drop=True)
 
             # Train model
@@ -480,7 +461,7 @@ def main():
                 # Calculate effective leaf mass per area separately for each vegetation type
                 for veg_type in resampled_df['veg_type'].unique():
                     # Filter to this vegetation type
-                    model_fitter = BulkDensityProfileModelFitter(resampled_df[resampled_df['veg_type' == veg_type]],
+                    model_fitter = BulkDensityProfileModelFitter(resampled_df[resampled_df['veg_type'==veg_type]],
                                                                  biomass_classes, 'pad', 'cbd_total',
                                                                  'height', 'plot_id', 'veg_type',
                                                                  profile_smoothing_factor, 1)
@@ -505,15 +486,14 @@ def main():
                 coef_all.append(coef)
         results = pd.DataFrame(coef_all)
 
+
         def quantile_05(series):
             return series.quantile(0.05)
-
         def quantile_95(series):
             return series.quantile(0.95)
 
         if by_veg_type:
-            results_summary = results.pivot_table(aggfunc=['median', 'std', quantile_05, quantile_95],
-                                                  index='veg_type')
+            results_summary = results.pivot_table(aggfunc=['median','std', quantile_05, quantile_95], index='veg_type')
             print(results_summary)
         else:
             results_summary = results.agg(['median', 'std', quantile_05, quantile_95])
