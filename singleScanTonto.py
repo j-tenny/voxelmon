@@ -257,7 +257,7 @@ def main():
     ### MODEL CANOPY FUELS ###
     # Remove surface fuel and outliers
     df_all = df_all[df_all['height'] >= 1]
-    outliers = ['T1423071101']
+    outliers = ['T1423071101','T0523080101']
     df_all = df_all[~(df_all['plot_id'].isin(outliers))]
     df_all = calculate_species_proportions(df_all,biomass_classes,'cbd_total')
     df_all['biomassPred'] = 0.0
