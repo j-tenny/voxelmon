@@ -6,10 +6,10 @@ import numpy as np
 import voxelmon
 from sklearn import linear_model
 
-singleScanDir = 'D:\\DataWork\\pypadResults\\PAD_Summary'
-singleScanDemDir = 'D:\\DataWork\\pypadResults\\DEM'
-multiScanDir = 'D:\\DataWork\\pypadResultsMulti\\PAD_Summary'
-multiScanDemDir = 'D:\\DataWork\\pypadResultsMulti\\DEM'
+singleScanDir = 'D:\\DataWork\\TontoFinalResultsSingle\\PAD_Summary'
+singleScanDemDir = 'D:\\DataWork\\TontoFinalResultsSingle\\DEM'
+multiScanDir = 'D:\\DataWork\\TontoFinalResultsMulti\\PAD_Summary'
+multiScanDemDir = 'D:\\DataWork\\TontoFinalResultsMulti\\DEM'
 
 singleScanFiles = voxelmon.get_files_list(singleScanDir,'.csv')
 multiScanFiles = voxelmon.get_files_list(multiScanDir,'.csv')
@@ -156,8 +156,8 @@ ax1.set_ylim(ax1.get_xlim())
 ax1.legend(loc='lower right',title='Veg Type')
 ax1.set_xlabel('Single-Scan LAD ($m^2$/$m^3$)')
 ax1.set_ylabel('Multiple-Scan LAD ($m^2$/$m^3$)')
-ax1.text(.05,.93,'$R^2$ = ' + str(lm.rsquared.round(2)),transform=ax1.transAxes)
-ax1.text(.05,.88,'RMSE = ' + str(((lm.resid ** 2).mean() ** .5).round(2))+ ' $m^2$/$m^2$',transform=ax1.transAxes)
+ax1.text(.05,.93,'$R^2$ = ' + str(lm.rsquared.round(2)),transform=ax1.transAxes, fontsize=9)
+ax1.text(.05,.88,'RMSE = ' + str(((lm.resid ** 2).mean() ** .5).round(2))+ ' $m^2$/$m^2$',transform=ax1.transAxes, fontsize=9)
 
 df_all['resid'] = lm.resid
 df_all['sq_resid'] = lm.resid ** 2
@@ -176,11 +176,11 @@ ax2.set_xlim(ax2.get_ylim())
 ax2.legend(loc='lower right',title='Veg Type')
 ax2.set_xlabel('Single-Scan LAI ($m^2$/$m^2$)')
 ax2.set_ylabel('Multiple-Scan LAI ($m^2$/$m^2$)')
-ax2.text(.05,.93,'$R^2$ = ' + str(lm2.rsquared.round(2)),transform=ax2.transAxes)
-ax2.text(.05,.88,'RMSE = ' + str(((lm2.resid ** 2).mean() ** .5).round(2)) + ' $m^2$/$m^2$',transform=ax2.transAxes)
+ax2.text(.05,.93,'$R^2$ = ' + str(lm2.rsquared.round(2)),transform=ax2.transAxes, fontsize=8)
+ax2.text(.05,.88,'RMSE = ' + str(((lm2.resid ** 2).mean() ** .5).round(2)) + ' $m^2$/$m^2$',transform=ax2.transAxes, fontsize=8)
 f.tight_layout(pad=.5, w_pad=2.5)
-plt.savefig('D:/DataWork/pypadResults/single-multi_pad.pdf')
-plt.savefig('D:/DataWork/pypadResults/single-multi_pad.png')
+plt.savefig('D:/DataWork/TontoFinalResultsSingle/single-multi_pad.pdf')
+plt.savefig('D:/DataWork/TontoFinalResultsSingle/single-multi_pad.png')
 plt.show()
 
 sns.scatterplot(df_all[['class','occludedSingle','heightSingle']].groupby(['class','heightSingle']).mean(),x='occludedSingle',y='heightSingle',hue='class')
