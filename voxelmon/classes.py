@@ -1,59 +1,79 @@
 import numpy as np
+import polars as pl
+import pandas as pd
 import pandas as pd
 from numba import jit,njit,guvectorize,prange,float32,void,uint16,int64,uint32,int32,float64
-from typing import Union
+from typing import Union, Sequence
 
 import voxelmon
 
 
 class Grid:
-    def __init__(self,extents,cellSize):
-        self.cellSize = np.float64(cellSize)
+    """Class to compute and store gridded values including voxelized PAD and terrain elevation
+
+    Grid values are stored as 3D arrays with dimensions x, then y, then z
+    """
+    def __init__(self, extents:Sequence[float], cell_size:float):
+        """Initialize Grid
+
+        Args:
+            extents (Sequence[float]): Extents of the grid formatted as [xmin, ymin, zmin, xmax, ymax, zmax]
+            cell_size (float): cell size
+        """
+        self.cell_size = np.float64(cell_size)
         self._set_extents(extents)
 
+        x_centers = np.arange(self.extents[0], self.extents[3], cell_size) + cell_size / 2
+        y_centers = np.arange(self.extents[1], self.extents[4], cell_size) + cell_size / 2
+        z_centers = np.arange(self.extents[2], self.extents[5], cell_size) + cell_size / 2
 
-        xCenters = np.arange(self.extents[0], self.extents[3], cellSize) + cellSize / 2
-        yCenters = np.arange(self.extents[1], self.extents[4], cellSize) + cellSize / 2
-        zCenters = np.arange(self.extents[2], self.extents[5], cellSize) + cellSize / 2
+        self.shape = [len(x_centers), len(y_centers), len(z_centers)]
 
-        self.shape = [len(xCenters), len(yCenters), len(zCenters)]
-
-        z, y, x = np.meshgrid(zCenters, yCenters, xCenters, indexing='ij')
+        z, y, x = np.meshgrid(z_centers, y_centers, x_centers, indexing='ij')
 
         self.centers = np.vstack([x.flatten(), y.flatten(), z.flatten()]).T  # Grid centers increment along x, then y, then z
-        self.centersXY = self.centers[:self.shape[0] * self.shape[1], :2]
+        self.centers_xy = self.centers[:self.shape[0] * self.shape[1], :2]
 
-        self.pDirected = np.zeros(self.shape, dtype=np.uint32)
-        self.pTransmitted = np.zeros(self.shape, dtype=np.uint32)
-        self.pIntercepted = np.zeros(self.shape, dtype=np.uint32)
+        self.p_directed = np.zeros(self.shape, dtype=np.uint32)
+        self.p_transmitted = np.zeros(self.shape, dtype=np.uint32)
+        self.p_intercepted = np.zeros(self.shape, dtype=np.uint32)
         self.classification = np.zeros(self.shape, dtype=np.int8)
 
-        self.classificationKey = {}
+        self.classification_key = {}
 
-        self.geometricFeatures = np.zeros([self.centers.shape[0], 4], np.float32) - 50
+        self.geometric_features = np.zeros([self.centers.shape[0], 4], np.float32) - 50
 
 
     @classmethod
-    def from_dims(cls,cellSize,gridHalfLengthX,gridHalfLengthY,gridHeight,gridBottom=None):
-        # Define grid parameters
-        if gridBottom is None:
-            gridExtents = [-gridHalfLengthX, -gridHalfLengthY, min(-gridHalfLengthX, -gridHalfLengthY),
-                            gridHalfLengthX,gridHalfLengthY,gridHeight] # xMin,yMin,zMin,xMax,yMax,zMax
+    def from_dims(cls, cell_size:float, grid_half_length_x:float, grid_half_length_y:float, grid_height:float, grid_bottom:float=None)->'Grid':
+        """Define grid by its dimensions
+
+        Args:
+            cell_size (float): cell size
+            grid_half_length_x (float): half the width of the grid in x dim (i.e. plot radius)
+            grid_half_length_y (float): half the width of the grid in y dim (i.e. plot radius)
+            grid_height (float): height of the grid above origin (height of tallest tree)
+            grid_bottom (float): distance from origin to bottom of the grid (zdist from origin to lowest terrain point)
+            """
+        if grid_bottom is None:
+            grid_extents = [-grid_half_length_x, -grid_half_length_y, min(-grid_half_length_x, -grid_half_length_y),
+                           grid_half_length_x, grid_half_length_y, grid_height] # xMin,yMin,zMin,xMax,yMax,zMax
         else:
-            gridExtents = [-gridHalfLengthX, -gridHalfLengthY, gridBottom,
-                           gridHalfLengthX, gridHalfLengthY, gridHeight]  # xMin,yMin,zMin,xMax,yMax,zMax
-        return cls(gridExtents,cellSize)
+            grid_extents = [-grid_half_length_x, -grid_half_length_y, grid_bottom,
+                           grid_half_length_x, grid_half_length_y, grid_height]  # xMin,yMin,zMin,xMax,yMax,zMax
+        return cls(grid_extents, cell_size)
 
     def _set_extents(self,extents):
         extents = np.array(extents).copy().astype(np.float64).round(5).flatten()
-        ncells = (extents[3:] - extents[0:3]) // self.cellSize
-        extents[3] = extents[0] + ncells[0] * self.cellSize
-        extents[4] = extents[1] + ncells[1] * self.cellSize
-        extents[5] = extents[2] + ncells[2] * self.cellSize
+        ncells = (extents[3:] - extents[0:3]) // self.cell_size
+        extents[3] = extents[0] + ncells[0] * self.cell_size
+        extents[4] = extents[1] + ncells[1] * self.cell_size
+        extents[5] = extents[2] + ncells[2] * self.cell_size
         self.extents = extents
 
-    def calculate_eigenvalues(self,points):
-        pointBins = (points // self.cellSize).astype(np.int32)
+    def calculate_eigenvalues(self,points) -> None:
+        """Calculate the eigenvalues of points within each grid cell. Needs review."""
+        pointBins = (points // self.cell_size).astype(np.int32)
         #sortedIndices = pointBins.view([('x', np.float64), ('y', np.float64), ('z', np.float64)]).argsort(axis=0,order=['z','y','x']).flatten()
         #pointBins = pointBins[sortedIndices]
         #points = points[sortedIndices]
@@ -61,7 +81,7 @@ class Grid:
         occupiedBins = occupiedBins[pointCount>=3]
 
         # Create empty array to fill out
-        gridBins = (self.centers // self.cellSize).astype(np.int32)
+        gridBins = (self.centers // self.cell_size).astype(np.int32)
 
         # Calculate variables used to find correct index of array using bin numbers
         binMin = gridBins.min(axis=0)
@@ -82,15 +102,17 @@ class Grid:
                 geometricFeatures[gridIndex,2] = -(eigvals[0] * np.log(eigvals[0]) + eigvals[1] * np.log(eigvals[1]) + eigvals[2] * np.log(eigvals[2])) # Eigenentropy
                 geometricFeatures[gridIndex,3] = 1-abs(eigvectors[2,2]) # Verticality
 
-        calculate_eigenvalues_numba(points,pointBins,occupiedBins,binMin,binRange,self.geometricFeatures)
+        calculate_eigenvalues_numba(points, pointBins, occupiedBins, binMin, binRange, self.geometric_features)
 
-    def calculate_pulse_metrics(self,pulses, G = .5):
+    def calculate_pulse_metrics(self,pulses:'Pulses', G = .5) -> None:
+        """Trace lidar pulses through grid to estimate PAD and other metrics"""
 
+        # Define function for voxel traversal algorithm, implemented in parallel with numba just-in-time compiler
         @njit([void(float64[:, :], float64, float64[:], uint32[:, :, :], uint32[:, :, :], uint32[:, :, :])],parallel=True)
         def voxel_traversal(pulses, cellSize, gridExtents, pDirected, pTransmitted, pIntercepted):
-            # @guvectorize([(float64[:,:],float64,float64[:], uint32[:,:,:], uint32[:,:,:],uint32[:,:,:],uint16)], '(a,b),(),(c),(d,e,f),(d,e,f),(d,e,f)->()', nopython=True, target='parallel')
-            # def voxel_traversal(pulses,cellSize,gridExtents,pDirected,pTransmitted,pIntercepted,outputFlag):
-            outputFlag = 1
+            """Trace lidar pulses through grid to count number of pulses directed, transmitted, and intercepted
+            Here, pulses must be a numpy array with columns """
+
             for i in prange(pulses.shape[0]):
 
                 # Find which cell the ray ends in
@@ -238,39 +260,52 @@ class Grid:
                         cellZ += stepZ
                         tMaxZ += tDeltaZ
 
-        voxel_traversal(pulses.array, self.cellSize, self.extents, self.pDirected, self.pTransmitted, self.pIntercepted)
+        voxel_traversal(pulses.array, self.cell_size, self.extents, self.p_directed, self.p_transmitted, self.p_intercepted)
 
-        meanPathLength = .843*self.cellSize # From Grau et al 2017
-        self.occlusion = 1 - (self.pIntercepted+self.pTransmitted) / self.pDirected
+        meanPathLength = .843*self.cell_size # Correction for unequal path lengths from Grau et al 2017
+        self.occlusion = 1 - (self.p_intercepted + self.p_transmitted) / self.p_directed
         self.occlusion[~np.isfinite(self.occlusion)] = 1
-        self.pad = -np.log(1-(self.pIntercepted/(self.pIntercepted+self.pTransmitted))) / (G*meanPathLength)
+        self.pad = -np.log(1 - (self.p_intercepted / (self.p_intercepted + self.p_transmitted))) / (G * meanPathLength)
         self.occlusion[~np.isfinite(self.pad)] = 1
         self.pad[~np.isfinite(self.pad)] = 0
 
-    def add_pulse_metrics(self,grid, G = .5):
-        # Combine pulse metrics from two Grid objects. Grids must overlap exactly (same extents, same cell size).
-        self.pDirected += grid.pDirected
-        self.pIntercepted += grid.pIntercepted
-        self.pTransmitted += grid.pTransmitted
-        meanPathLength = .843 * self.cellSize  # From Grau et al 2017
-        self.pad = -np.log(1-(self.pIntercepted/(self.pIntercepted+self.pTransmitted))) / (G*meanPathLength)
+    def add_pulse_metrics(self,grid, G = .5) -> None:
+        """Combine pulse metrics from two Grid objects. Grids must overlap exactly (same extents, same cell size)."""
+        self.p_directed += grid.p_directed
+        self.p_intercepted += grid.p_intercepted
+        self.p_transmitted += grid.p_transmitted
+        meanPathLength = .843 * self.cell_size  # From Grau et al 2017
+        self.pad = -np.log(1 - (self.p_intercepted / (self.p_intercepted + self.p_transmitted))) / (G * meanPathLength)
         self.occlusion = np.minimum(self.occlusion,grid.occlusion)
         self.occlusion[~np.isfinite(self.occlusion)] = 1
         self.occlusion[~np.isfinite(self.pad)] = 1
         self.pad[~np.isfinite(self.pad)] = 0
 
+    def filter_pad_noise_ivf(self, window_radius=15, min_count_present=5) -> None:
+        """Search a moving window around each grid cell, set PAD to 0 if cell has few neighbors
 
-
-    def filter_pad_noise_ivf(self,windowRadius=15,minCountPresent=5):
-        # Search a moving window around each grid cell, set PAD to 0 if cell has few neighbors
-        # Window size is total width of window with cells as the unit. Must be odd number?
+        Window size is total width of window with cells as the unit. Must be odd number?
+        """
         from scipy import ndimage
         presence = (self.pad>0).astype(np.float32)
-        count = ndimage.uniform_filter(presence,windowRadius) * windowRadius**2
-        self.pad[count<minCountPresent] = 0
+        count = ndimage.uniform_filter(presence, window_radius) * window_radius ** 2
+        self.pad[count < min_count_present] = 0
 
 
-    def create_dem_decreasing_window(self, pulses, windowSizes = [5,2.5,1,.5], heightThresholds=[2.5,1.25,.5,.25]):
+    def create_dem_decreasing_window(self, pulses:'Pulses', window_sizes:Sequence[float] = [5, 2.5, 1, .5],
+                                     height_thresholds:Sequence[float]=[2.5, 1.25, .5, .25]) -> None:
+        """Create a digital elevation model from a point cloud using iterative height filtering algorithm
+
+        Algorithm is based on Caster et al 2021 https://doi.org/10.1016/j.geoderma.2021.115369
+
+        Args:
+            pulses (Pulses): input point cloud. Can include mix of ground and veg, does not need to be pre-classified.
+            window_sizes: list of progressively smaller xy window resolutions
+            height_thresholds: list of progressively smaller height thresholds
+
+        Returns: None
+
+        """
         import polars as pl
         import scipy
         from voxelmon.utils import interp2D_w_cubic_extrapolation
@@ -284,18 +319,18 @@ class Grid:
         # Get lowest point in base grid
         grid = self.bin2D(points,pl.min('z'))
         grid[np.isnan(grid)]=99
-        centers = self.centersXY
+        centers = self.centers_xy
         # Create a grid of coordinates corresponding to the array indices
         x, y = np.indices(grid.shape)
 
         points = pl.DataFrame({'x':points[:,0],'y':points[:,1],'z':points[:,2],'ground':-2})
-        points = points.with_columns(pl.col('x').floordiv(self.cellSize).cast(pl.Int32).alias('xBin'),
-                                     pl.col('y').floordiv(self.cellSize).cast(pl.Int32).alias('yBin'))
+        points = points.with_columns(pl.col('x').floordiv(self.cell_size).cast(pl.Int32).alias('xBin'),
+                                     pl.col('y').floordiv(self.cell_size).cast(pl.Int32).alias('yBin'))
 
         # Get lowest point in decreasing windows
-        for windowSize,heightThresh in zip(windowSizes,heightThresholds):
+        for windowSize,heightThresh in zip(window_sizes, height_thresholds):
             # Get low points in moving window
-            cellRadius = round(windowSize/2/self.cellSize)
+            cellRadius = round(windowSize / 2 / self.cell_size)
             windowShape = [cellRadius*2+1,cellRadius*2+1]
             grid = scipy.ndimage.percentile_filter(grid,.25,windowShape,mode='nearest')
 
@@ -308,8 +343,8 @@ class Grid:
             grid[maskMissing] = interp2D_w_cubic_extrapolation(pointsValid, valuesValid, pointsMissing)
 
             # Relate elevation data to point cloud
-            dem_df = pl.DataFrame({'xBin':(centers[:,0]//self.cellSize).astype(np.int32),
-                                   'yBin':(centers[:,1]//self.cellSize).astype(np.int32),
+            dem_df = pl.DataFrame({'xBin':(centers[:,0] // self.cell_size).astype(np.int32),
+                                   'yBin':(centers[:,1] // self.cell_size).astype(np.int32),
                                    'ground':grid.flatten()})
             points = points.drop('ground').join(dem_df,['xBin','yBin'],'left')
 
@@ -329,12 +364,13 @@ class Grid:
         self.dem = grid
         self.hag = self.centers[:,2] - np.tile(grid.flatten(),self.shape[2])
 
-    def calculate_dem_metrics(self):
+    def calculate_dem_metrics(self) -> dict:
+        """Summarize overall terrain slope, aspect, roughness, and concavity"""
         import statsmodels.api as sm
         import pandas as pd
         results = {}
 
-        dem_df = pd.DataFrame({'x':self.centersXY[:,0],'y':self.centersXY[:,1],'z':self.dem.flatten()})
+        dem_df = pd.DataFrame({'x': self.centers_xy[:, 0], 'y': self.centers_xy[:, 1], 'z':self.dem.flatten()})
 
         # Calculate horizontal distance from center
         dem_df['HD'] = np.sqrt(dem_df['x'] ** 2 + dem_df['y'] ** 2)
@@ -384,28 +420,49 @@ class Grid:
         results['terrain_roughness'] = np.sqrt(np.mean(dem_df['resid'] ** 2))
         return results
 
-    def calculate_canopy_cover(self,clip_radius = 11.3,cutoff_height=2,min_pad = .05,max_occlusion=.8):
+    def calculate_canopy_cover(self, clip_radius:Union[float,None] = 11.3,
+                               cutoff_height:float = 2,
+                               max_occlusion:float = .8) -> float:
+        """Calculate canopy cover using raster approach
+
+        Args:
+            clip_radius (float) or None: clip to circular plot with specified radius. If None, does not clip.
+            cutoff_height: minimum height of vegetation considered in canopy cover
+            max_occlusion: nullifies raster cells where mean occlusion is greater than this value.
+
+        """
         import polars as pl
         df = self.to_polars().select(['x','y','hag','pad','occlusion'])
         df = df.filter(pl.col('hag').ge(cutoff_height))
         if clip_radius is not None:
             df = df.filter(((pl.col('x')**2 + pl.col('y')**2)**.5).le(clip_radius))
-        df = df.group_by((pl.col('x')/self.cellSize).cast(int), (pl.col('y')/self.cellSize).cast(int)) \
+        df = df.group_by((pl.col('x') / self.cell_size).cast(int), (pl.col('y') / self.cell_size).cast(int)) \
                .agg([(pl.col("pad") >= 0.05).sum().alias('filled'),
                      pl.col("occlusion").mean().alias("occlusion")])
         total_cells = df.filter(pl.col('filled').gt(0) | pl.col('occlusion').le(max_occlusion)).shape[0]
         filled_cells = df.filter(pl.col('filled').gt(0)).shape[0]
         return filled_cells / total_cells
 
-    def classify_foliage_with_PAD(self,maxOcclusion=.75,minPADFoliage=.05,maxPADFoliage=6):
-        self.classification[:,:,:] = -2
-        self.classification[self.occlusion>maxOcclusion] = -1
-        self.classification[self.pad<0] = -1
-        self.classification[self.pad>=minPADFoliage] = 3
-        self.classification[self.pad>maxPADFoliage] = 5
-        self.classificationKey = {-2:'empty',-1:'occluded',3:'foliage',5:'nonfoliage'}
+    def classify_foliage_with_PAD(self, max_occlusion:float=.8, min_pad_foliage=.05, max_pad_foliage=6) -> None:
+        """Classify voxels based on PAD thresholds and occlusion value.
 
-    def gaussian_filter_PAD(self,sigma=.1,maxOcclusion=.75):
+        Sets self.classification and self.classification_key.
+        Key: {-2: 'empty', -1: 'occluded', 3: 'foliage', 5: 'nonfoliage'}
+
+        Args:
+            max_occlusion: if occlusion is greater than this value, classify as occluded
+            min_pad_foliage: if PAD is less than this value, classify as empty, otherwise classify foliage
+            max_pad_foliage: if PAD is greater than this value, classify as non-foliage
+        """
+        self.classification[:,:,:] = -2
+        self.classification[self.occlusion > max_occlusion] = -1
+        self.classification[self.pad<0] = -1
+        self.classification[self.pad >= min_pad_foliage] = 3
+        self.classification[self.pad > max_pad_foliage] = 5
+        self.classification_key = {-2: 'empty', -1: 'occluded', 3: 'foliage', 5: 'nonfoliage'}
+
+    def gaussian_filter_PAD(self,sigma=.1):
+        """Apply gaussian smoothing filter to PAD grid"""
 
         from scipy import ndimage,interpolate
         # Interpolate missing values
@@ -419,55 +476,70 @@ class Grid:
         self.pad = ndimage.gaussian_filter(self.pad,sigma)
 
 
-    def bin2D(self,pulses,function):
-        # Function should be from polars and should specify a column name x, y, or z, e.g. pl.min('z')
+    def bin2D(self,pulses,function)->'pl.DataFrame':
+        """Aggregate values from pulses to 2D grid
+
+        Function should be from polars and should specify a column name x, y, or z, e.g. pl.min('z')"""
         import polars as pl
         try:
             points_df = pl.DataFrame({'x':pulses.xyz[:,0],'y':pulses.xyz[:,1],'z':pulses.xyz[:,2]})
         except:
             points_df = pl.DataFrame({'x':pulses[:,0],'y':pulses[:,1],'z':pulses[:,2]})
 
-        points_df = points_df.with_columns(pl.col('x').floordiv(self.cellSize).cast(pl.Int32).alias('xBin'),
-                                           pl.col('y').floordiv(self.cellSize).cast(pl.Int32).alias('yBin'))
+        points_df = points_df.with_columns(pl.col('x').floordiv(self.cell_size).cast(pl.Int32).alias('xBin'),
+                                           pl.col('y').floordiv(self.cell_size).cast(pl.Int32).alias('yBin'))
 
-        bins_df = pl.DataFrame({'xBin': (self.centersXY[:,0]//self.cellSize).astype(np.int32),
-                                'yBin': (self.centersXY[:,1]//self.cellSize).astype(np.int32)})
+        bins_df = pl.DataFrame({'xBin': (self.centers_xy[:, 0] // self.cell_size).astype(np.int32),
+                                'yBin': (self.centers_xy[:, 1] // self.cell_size).astype(np.int32)})
 
         binVals = points_df.drop_nulls().group_by(['xBin','yBin']).agg(function)
 
         return bins_df.join(binVals,['xBin','yBin'],'left').to_numpy()[:,2].reshape([self.shape[0],self.shape[1]],order='c')
 
-    def to_polars(self):
+    def to_polars(self)->'pl.DataFrame':
+        """Convert grid to polars dataframe"""
         import polars
         df = polars.DataFrame({'x': self.centers[:, 0], 'y': self.centers[:, 1], 'z': self.centers[:, 2], 'hag':self.hag,
-                                'pDirected': self.pDirected.flatten('F'),'pTransmitted': self.pTransmitted.flatten('F'),
-                                'pIntercepted': self.pIntercepted.flatten('F'),'occlusion': self.occlusion.flatten('F'),
-                                'pad': self.pad.flatten('F'), 'linearity':self.geometricFeatures[:,0],
-                                'planarity':self.geometricFeatures[:,1],'eigenentropy':self.geometricFeatures[:,2],
-                                'verticality':self.geometricFeatures[:,3],'classification':self.classification.flatten('F')})
+                                'pDirected': self.p_directed.flatten('F'), 'pTransmitted': self.p_transmitted.flatten('F'),
+                                'pIntercepted': self.p_intercepted.flatten('F'), 'occlusion': self.occlusion.flatten('F'),
+                                'pad': self.pad.flatten('F'), 'linearity': self.geometric_features[:, 0],
+                                'planarity': self.geometric_features[:, 1], 'eigenentropy': self.geometric_features[:, 2],
+                                'verticality': self.geometric_features[:, 3], 'classification':self.classification.flatten('F')})
         return df
 
 
-    def summarize_by_height(self,clipRadius = None, foliageClasses = [3],emptyClass=-2):
+    def summarize_by_height(self, clip_radius:Union[float,None] = None,
+                            foliage_classes:Sequence[int] = [3],
+                            empty_class:int=-2) -> 'pl.DataFrame':
+        """Summarize grid within bins of height-above-ground
+
+        Estimates mean PAD including foliage classes and empty_class while ignoring other classes
+
+        Args:
+            clip_radius (float or None): if not None, will clip to circular plot based on origin and clip_radius
+            foliage_classes (Sequence[int]): class ID values that should be considered foliage
+            empty_class (int): class ID value that should be considered empty
+
+        """
         import polars as pl
 
         df = self.to_polars()
 
-        if clipRadius!=None:
-            df = df.filter(((pl.col('x')**2 + pl.col('y')**2)**.5)<clipRadius)
+        if clip_radius!=None:
+            df = df.filter(((pl.col('x')**2 + pl.col('y')**2)**.5) < clip_radius)
 
         # Filter bad height data
         df = df.filter((pl.col('hag')>=0) & (pl.col('hag').is_not_nan()))
 
         # Assign height bins
-        df = df.with_columns(pl.col('hag').floordiv(self.cellSize).cast(pl.Int32).alias('heightBin'))
+        df = df.with_columns(pl.col('hag').floordiv(self.cell_size).cast(pl.Int32).alias('heightBin'))
 
         # Count voxels by class and height bin
         summary = df.pivot(on="classification", index="heightBin", values='classification', aggregate_function=pl.len())
         summary = summary.fill_null(0)
 
         # Assign meaningful column names
-        summary.columns =['heightBin'] + [self.classificationKey[int(col)] for col in summary.columns[1:]]
+        summary.columns =['heightBin'] + [self.classification_key[int(col)] for col in summary.columns[1:]]
 
         if 'occluded' not in summary.columns:
             summary = summary.with_columns(pl.lit(0.0).alias('occluded'))
@@ -481,108 +553,141 @@ class Grid:
 
 
         # Get mean PAD within foliage and empty space, ignoring occluded areas and other classes
-        pad = df.filter(pl.col('classification').is_in(foliageClasses+[emptyClass]))
+        pad = df.filter(pl.col('classification').is_in(foliage_classes + [empty_class]))
         pad = pad.group_by('heightBin').agg(pl.mean('pad')).sort('heightBin')
 
         summary = summary.join(pad,on='heightBin',how='full',coalesce=True).sort('heightBin')
 
         # Clean up
-        summary = pl.DataFrame((summary['heightBin'].cast(pl.Float64) * (self.cellSize)).alias('height')).hstack(summary)
+        summary = pl.DataFrame((summary['heightBin'].cast(pl.Float64) * (self.cell_size)).alias('height')).hstack(summary)
         summary = summary.fill_null(0).fill_nan(0)
 
         return summary
 
-    def export_height_summary_as_csv(self,filepath,clipRadius = None,foliageClasses = [3],emptyClass=-2):
-        df = self.summarize_by_height(clipRadius = clipRadius,foliageClasses=foliageClasses,emptyClass=emptyClass)
-        df.write_csv(filepath)
-
     def export_grid_as_csv(self, filepath):
+        """Write grid to csv file (compatible with CloudCompare and other software)"""
         df = self.to_polars()
         df.write_csv(filepath)
 
     def export_dem_as_csv(self,filepath):
+        """Write terrain model to points-like csv file (compatible with CloudCompare)"""
         import polars
-        df = polars.DataFrame({'x':self.centersXY[:,0],'y':self.centersXY[:,1],'z':self.dem.flatten()})
+        df = polars.DataFrame({'x': self.centers_xy[:, 0], 'y': self.centers_xy[:, 1], 'z':self.dem.flatten()})
         df.write_csv(filepath)
-
-
-
-
-
-
-# Read and format pulses array
 
 class Pulses:
-    def __init__(self,pulses_array):
-        # Pulses array must be a 2D numpy array with type float64 with columns ordered
-        # 0:x_origin, 1:y_origin, 2:z_origin, 3:x_end, 4:y_end, 5:z_end, 6:unit_x, 7:unit_y, 8:unit_z, 9:total_length
-        if pulses_array.shape[1] != 10:
-            raise IndexError('pulses_array must have 10 correctly formatted columns, otherwise use Pulses.from_point_cloud_array()')
-        self.array = pulses_array
-        self.xyz = self.array[:, 3:6]
+    def __init__(self,pulses_df:'pl.DataFrame'):
+        """Initialize Pulses from dataframe
+
+        Required columns:
+            X (double): X coordinate of return
+            Y (double): Y coordinate of return
+            Z (double): Z coordinate of return
+            BeamOriginX (double): X coordinate of beam origin
+            BeamOriginY (double): Y coordinate of beam origin
+            BeamOriginZ (double): Z coordinate of beam origin
+
+        Columns added if not present:
+            BeamDirectionX (double): Beam direction unit vector X coordinate
+            BeamDirectionY (double): Beam direction unit vector X coordinate
+            BeamDirectionZ (double): Beam direction unit vector X coordinate
+            Weight (double): Weight of this return used in path tracing calculations (defaults to 1/NumberOfReturns or 1)
+            Classification (Uint8): Point classification label
+
+        """
+        required_cols = ['X', 'Y', 'Z', 'BeamOriginX', 'BeamOriginY', 'BeamOriginZ']
+        for col in required_cols:
+            if col not in pulses_df.columns:
+                raise KeyError(f'Required column {col} not found in pulses_df')
+
+        self.df = pulses_df
+
+        if 'BeamDirectionX' not in pulses_df.columns or 'BeamDirectionY' not in pulses_df.columns or 'BeamDirectionZ' not in pulses_df.columns:
+            self.calculate_unit_vectors()
+
+        if 'Weight' not in pulses_df.columns:
+            if 'NumberOfReturns' in self.df.columns:
+                self.df = self.df.with_columns(pl.lit(1).truediv(pl.col('NumberOfReturns')).alias('Weight'))
+            else:
+                self.df = self.df.with_columns(pl.lit(1).alias('Weight'))
+
+        if 'Classification' not in pulses_df.columns:
+            self.df = self.df.with_columns(pl.lit(0).alias('Classification'))
 
     @classmethod
-    def from_point_cloud_array(cls,xyzArray,origin):
-        # xyzArray must be a numpy array with column order x, y, z
-        xyzArray = xyzArray.astype(np.float64)
-        self = cls.initialize_empty_array(nRecords=xyzArray.shape[0])
+    def from_point_cloud_array(cls, xyz_array:Union['np.array','pl.DataFrame'],
+                               origin:Union[Sequence,'np.array','pl.DataFrame'] = None,):
+        """Initialize from numpy array or pl.DataFrame where the first three columns are x, y, z coordinates
 
-        self.array[:, 0] = origin[0]
-        self.array[:, 1] = origin[1]
-        self.array[:, 2] = origin[2]
+        Origin must be provided as sequence of three values (x, y, z) for single origin or as matrix where first three
+        columns represent x, y, z coordinates of origin and number of rows matches xyz_array
+        """
+        origin = np.array(origin)
+        if len(xyz_array.shape) == 1:
+            df = pl.DataFrame({'X': xyz_array[:,0], 'Y': xyz_array[:,1], 'Z': xyz_array[:,2],
+                               'BeamOriginX': origin[0], 'BeamOriginY': origin[1], 'BeamOriginZ': origin[2]})
+        else:
+            df = pl.DataFrame({'X': xyz_array[:,0], 'Y': xyz_array[:,1], 'Z': xyz_array[:,2],
+                               'BeamOriginX': origin[:,0], 'BeamOriginY': origin[:,1], 'BeamOriginZ': origin[:,2]})
+        try:
+            df = df.with_columns(pl.lit(xyz_array['Classification']).alias('Classification'))
+        except:
+            pass
 
-        self.array[:, 3:6] = xyzArray[:, 0:3]
+        try:
+            df = df.with_columns(pl.lit(xyz_array['NumberOfReturns']).alias('NumberOfReturns'))
+        except:
+            pass
 
-        self.calculate_unit_vectors()
-
-        return self
+        return cls(df)
 
     @classmethod
-    def from_file(cls,filepath,origin):
+    def from_file(cls, filepath, origin=None):
         import utils
         df = utils.open_file_pdal(filepath)
-        return cls.from_point_cloud_array(df,origin)
+        if origin is None:
+            return cls(df)
+        else:
+            return cls.from_point_cloud_array(df,origin)
 
-    @classmethod
-    def initialize_empty_array(cls,nRecords):
-        nCols = 10 # x_origin, y_origin, z_origin, x_end, y_end, z_end, unit_x, unit_y, unit_z, total_length
-        return cls(np.zeros([nRecords, nCols], np.float64))
+    @property
+    def array(self):
+        return self.df.select(['BeamOriginX', 'BeamOriginY', 'BeamOriginZ', 'X', 'Y', 'Z',
+                               'BeamDirectionX', 'BeamDirectionY', 'BeamDirectionZ', 'Weight'])
+
+    @property
+    def xyz(self) -> 'np.array':
+        return self.df.select(['X','Y','Z']).to_numpy()
 
     def calculate_unit_vectors(self):
-        diff = self.array[:, 3:6] - self.array[:, 0:3]
-        self.array[:, 9] = (diff[:, 0] ** 2 + diff[:, 1] ** 2 + diff[:, 2] ** 2) ** .5  # calculate total length
-        self.array[:, 6] = diff[:, 0] / self.array[:, 9]  # calculate x component of unit vector
-        self.array[:, 7] = diff[:, 1] / self.array[:, 9]  # calculate y component of unit vector
-        self.array[:, 8] = diff[:, 2] / self.array[:, 9]  # calculate z component of unit vector
+        arr = self.df.select(['BeamOriginX', 'BeamOriginY', 'BeamOriginZ', 'X', 'Y', 'Z'])
+        diff = arr[:, 3:6] - arr[:, 0:3]
+        length = (diff[:, 0] ** 2 + diff[:, 1] ** 2 + diff[:, 2] ** 2) ** .5  # calculate total length
+        self.df = self.df.with_columns(pl.lit(diff[:, 0] / length).alias('BeamDirectionX'))   # calculate x component of unit vector
+        self.df = self.df.with_columns(pl.lit(diff[:, 1] / length).alias('BeamDirectionY'))  # calculate y component of unit vector
+        self.df = self.df.with_columns(pl.lit(diff[:, 2] / length).alias('BeamDirectionZ'))   # calculate z component of unit vector
 
-    def crop(self,extents):
-        cropped = self.array[(self.array[:,3]>=extents[0]) & (self.array[:,4]>=extents[1]) & \
-                            (self.array[:,5]>=extents[2]) & (self.array[:,3]<=extents[3]) & \
-                            (self.array[:,4]<=extents[4]) & (self.array[:,5]<=extents[5])]
-        return Pulses(cropped)
+    def crop(self,extents)->'Pulses':
+        mask = ((self.df['X']>=extents[0]) & (self.df['Y']>=extents[1]) &
+               (self.df['Z']>=extents[2]) & (self.df['X']<=extents[3]) &
+               (self.df['Y']<=extents[4]) & (self.df['Z']<=extents[5]))
 
-    def thin_distance_weighted_random(self,propRemaining):
-        distsq = self.array[:,9]**2
+        return Pulses(self.df.filter(mask))
+
+    def thin_distance_weighted_random(self,propRemaining)->'Pulses':
+        arr = self.array
+        diff = arr[:, 3:6] - arr[:, 0:3]
+        distsq = (diff[:, 0] ** 2 + diff[:, 1] ** 2 + diff[:, 2] ** 2)
         weights = distsq / distsq.sum()
         randIndex = np.random.choice(distsq.size,int(distsq.size * propRemaining),replace=False,p=weights)
-        thinned_array = self.array[randIndex]
-        return Pulses(thinned_array)
+        return Pulses(self.df.filter(randIndex))
 
-
-    def to_polars(self):
-        import polars
-        df = polars.DataFrame({'x':self.array[:,3],'y':self.array[:,4],'z':self.array[:,5],
-                               'x_origin':self.array[:,0],'y_origin':self.array[:,1],'z_origin':self.array[:,2],
-                               'x_unit':self.array[:,6],'y_unit':self.array[:,7],'z_unit':self.array[:,8],
-                               'length':self.array[:,9]})
-        return df
-
-    def to_csv(self,filepath,coordinatesOnly=True):
-        df=self.to_polars()
-        if coordinatesOnly:
-            import polars as pl
-            df = df.select(pl.col('x'),pl.col('y'),pl.col('z'))
-        df.write_csv(filepath)
+    def to_csv(self, filepath, coordinates_only=True):
+        """Write pulses to csv file. Optionally, export return coordinates only."""
+        if coordinates_only:
+            self.df.select(['X','Y','Z']).write_csv(filepath)
+        else:
+            self.df.write_csv(filepath)
 
 class ALS:
     def __init__(self,filepath, bounds = None):
@@ -988,7 +1093,7 @@ class PtxBlk360G1:
         gridExtents[5] = max_height
 
         # pulses_thin = pulses_thin.thin_distance_weighted_random(.25)
-        grid = Grid(extents=gridExtents, cellSize=cell_size)
+        grid = Grid(extents=gridExtents, cell_size=cell_size)
 
         grid.create_dem_decreasing_window(pulses_thin)
 
@@ -1033,7 +1138,7 @@ class PtxBlk360G1_Group:
         extents[2] = minHeight
         extents[5] = max_height
 
-        grid = Grid(extents=extents, cellSize=cell_size)
+        grid = Grid(extents=extents, cell_size=cell_size)
 
         grid.create_dem_decreasing_window(pulsesThinAll)
 
@@ -1041,7 +1146,7 @@ class PtxBlk360G1_Group:
 
         if len(pulsesList)>1:
             for pulses in pulsesList[1:]:
-                grid_temp = Grid(extents=extents, cellSize=cell_size)
+                grid_temp = Grid(extents=extents, cell_size=cell_size)
                 grid_temp.calculate_pulse_metrics(pulses)
                 grid.add_pulse_metrics(grid_temp)
 

@@ -471,8 +471,8 @@ def _default_postprocessing(grid, plot_name, export_folder, plot_radius=11.3, ma
     import pandas as pd
     grid.filter_pad_noise_ivf()
     grid.gaussian_filter_PAD(sigma=sigma1)
-    grid.classify_foliage_with_PAD(maxOcclusion=max_occlusion, minPADFoliage=min_pad_foliage, maxPADFoliage=max_pad_foliage)
-    profile = grid.summarize_by_height(clipRadius=plot_radius)
+    grid.classify_foliage_with_PAD(max_occlusion=max_occlusion, min_pad_foliage=min_pad_foliage, max_pad_foliage=max_pad_foliage)
+    profile = grid.summarize_by_height(clip_radius=plot_radius)
     summary = grid.calculate_dem_metrics()
     summary['canopy_cover'] = grid.calculate_canopy_cover()
     summary['plot_id'] = plot_name
