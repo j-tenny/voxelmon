@@ -11,9 +11,10 @@ from tkinter import ttk
 
 
 #grid_path = 'D:/DataWork/pypadResults/PAD/T1423070502.csv'
-grid_path = 'D:/DataWork/pypadResults/PAD/T1423081501.csv'
-#clip_extents = 'auto'
-clip_extents = [-11.3,-.5,11.3,.5]
+#grid_path = 'D:/DataWork/pypadResults/PAD/T1423081501.csv'
+grid_path = 'D:/DataWork/TontoFinalResultsMulti/PAD/T1123071401.csv'
+clip_extents = 'auto'
+#clip_extents = [-11.3,-.5,11.3,.5]
 #clip_extents = [-.5,-11.3,.5,11.3] # [minx, miny, minz, maxx, maxy, maxz], [minx, miny, maxx, maxy] or 'auto'
 grid_path=Path(grid_path)
 basename = grid_path.name

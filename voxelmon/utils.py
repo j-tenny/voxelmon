@@ -448,6 +448,15 @@ def interp2D_w_cubic_extrapolation(xy_train, values_train, xy_predict):
         values_predict[nans] = model.predict(create_dmatrix(xy_predict[nans]))
     return values_predict
 
+def interpolate_flightpath(points, flightpath):
+    from scipy.interpolate import interp1d
+    interpolator_x = interp1d(flightpath['GpsTime'].to_numpy(),flightpath['X'].to_numpy())
+    interpolator_y = interp1d(flightpath['GpsTime'].to_numpy(), flightpath['Y'].to_numpy())
+    interpolator_z = interp1d(flightpath['GpsTime'].to_numpy(), flightpath['Z'].to_numpy())
+    x = interpolator_x(points['GpsTime'])
+    y = interpolator_y(points['GpsTime'])
+    z = interpolator_z(points['GpsTime'])
+    return np.stack([x,y,z],1)
 
 def _default_folder_setup(export_folder):
     from pathlib import Path

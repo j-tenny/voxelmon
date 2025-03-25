@@ -7,3 +7,5 @@ stats.ipynb
 /dist
 /build
 sancarlos_prepost.py
+/test_data
+/test_outputs

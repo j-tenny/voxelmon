@@ -34,9 +34,9 @@ class Grid:
         self.centers = np.vstack([x.flatten(), y.flatten(), z.flatten()]).T  # Grid centers increment along x, then y, then z
         self.centers_xy = self.centers[:self.shape[0] * self.shape[1], :2]
 
-        self.p_directed = np.zeros(self.shape, dtype=np.uint32)
-        self.p_transmitted = np.zeros(self.shape, dtype=np.uint32)
-        self.p_intercepted = np.zeros(self.shape, dtype=np.uint32)
+        self.p_directed = np.zeros(self.shape, dtype=np.float64)
+        self.p_transmitted = np.zeros(self.shape, dtype=np.float64)
+        self.p_intercepted = np.zeros(self.shape, dtype=np.float64)
         self.classification = np.zeros(self.shape, dtype=np.int8)
 
         self.classification_key = {}
@@ -108,7 +108,7 @@ class Grid:
         """Trace lidar pulses through grid to estimate PAD and other metrics"""
 
         # Define function for voxel traversal algorithm, implemented in parallel with numba just-in-time compiler
-        @njit([void(float64[:, :], float64, float64[:], uint32[:, :, :], uint32[:, :, :], uint32[:, :, :])],parallel=True)
+        @njit([void(float64[:, :], float64, float64[:], float64[:, :, :], float64[:, :, :], float64[:, :, :])],parallel=True)
         def voxel_traversal(pulses, cellSize, gridExtents, pDirected, pTransmitted, pIntercepted):
             """Trace lidar pulses through grid to count number of pulses directed, transmitted, and intercepted
             Here, pulses must be a numpy array with columns """
@@ -182,9 +182,9 @@ class Grid:
                         (xstart <= gridExtents[3]) & (ystart <= gridExtents[4]) & (zstart <= gridExtents[5])):
                     continue
 
-                cellX = np.uint16((xstart - gridExtents[0]) // cellSize)
-                cellY = np.uint16((ystart - gridExtents[1]) // cellSize)
-                cellZ = np.uint16((zstart - gridExtents[2]) // cellSize)
+                cellX = np.uint32((xstart - gridExtents[0]) // cellSize)
+                cellY = np.uint32((ystart - gridExtents[1]) // cellSize)
+                cellZ = np.uint32((zstart - gridExtents[2]) // cellSize)
 
                 # Calculate tmax as the number of timesteps to reach edge of next voxel.
                 # Account for travelling towards upper bounds of voxels or lower bounds of voxels
@@ -238,14 +238,14 @@ class Grid:
                 while (cellX != pDirected.shape[0]) and (cellY != pDirected.shape[1]) and (
                         cellZ != pDirected.shape[2]) and (cellX != -1) and (cellY != -1) and (cellZ != -1):
                     # Update counters
-                    pDirected[cellX, cellY, cellZ] += 1  # Pulse was directed at this voxel, may or may not have passed through
+                    pDirected[cellX, cellY, cellZ] += pulses[i,9]  # Pulse was directed at this voxel, may or may not have passed through
 
                     if (not intercepted) and (cellZ == cellZEnd) and (cellX == cellXEnd) and (cellY == cellYEnd):
-                        pIntercepted[cellX, cellY, cellZ] += 1  # Pulse intercepted within this voxel
+                        pIntercepted[cellX, cellY, cellZ] += pulses[i,9]  # Pulse intercepted within this voxel
                         intercepted = True
 
                     if not intercepted:
-                        pTransmitted[cellX, cellY, cellZ] += 1  # Pulse passed through this voxel
+                        pTransmitted[cellX, cellY, cellZ] += pulses[i,9]  # Pulse passed through this voxel
 
                     if (tMaxX < tMaxY) and (tMaxX < tMaxZ):
                         # X-axis traversal.
@@ -296,7 +296,7 @@ class Grid:
                                      height_thresholds:Sequence[float]=[2.5, 1.25, .5, .25]) -> None:
         """Create a digital elevation model from a point cloud using iterative height filtering algorithm
 
-        Algorithm is based on Caster et al 2021 https://doi.org/10.1016/j.geoderma.2021.115369
+        Algorithm is based on Caster et al. 2021 https://doi.org/10.1016/j.geoderma.2021.115369
 
         Args:
             pulses (Pulses): input point cloud. Can include mix of ground and veg, does not need to be pre-classified.
@@ -623,7 +623,7 @@ class Pulses:
         columns represent x, y, z coordinates of origin and number of rows matches xyz_array
         """
         origin = np.array(origin)
-        if len(xyz_array.shape) == 1:
+        if len(origin.shape) == 1:
             df = pl.DataFrame({'X': xyz_array[:,0], 'Y': xyz_array[:,1], 'Z': xyz_array[:,2],
                                'BeamOriginX': origin[0], 'BeamOriginY': origin[1], 'BeamOriginZ': origin[2]})
         else:
@@ -653,7 +653,7 @@ class Pulses:
     @property
     def array(self):
         return self.df.select(['BeamOriginX', 'BeamOriginY', 'BeamOriginZ', 'X', 'Y', 'Z',
-                               'BeamDirectionX', 'BeamDirectionY', 'BeamDirectionZ', 'Weight'])
+                               'BeamDirectionX', 'BeamDirectionY', 'BeamDirectionZ', 'Weight']).to_numpy()
 
     @property
     def xyz(self) -> 'np.array':
@@ -690,20 +690,43 @@ class Pulses:
             self.df.write_csv(filepath)
 
 class ALS:
-    def __init__(self,filepath, bounds = None):
+    def __init__(self,filepath, bounds:str = None):
+        """Initialize ALS reader
+
+        Args:
+            filepath (str): Path to ALS file readable by pdal. Type is inferred by extension.
+            bounds (str): Clip extents of the resource in 2 or 3 dimensions, formatted as pdal-compatible string,
+                e.g.: ([xmin, xmax], [ymin, ymax], [zmin, zmax]). If omitted, the entire dataset will be selected.
+                The bounds can be followed by a slash (‘/’) and a spatial reference specification to apply to the bounds.
+            """
         from voxelmon.utils import open_file_pdal
         self.path = filepath
         self.bounds = bounds
         self.points, self.crs = open_file_pdal(self.path, self.bounds)
 
-    def estimate_flightpath(self, min_separation=2, time_bin_size=.5, fit_line=True, min_z_q = .75, flightline_t_break=5):
-        import pdal
+    def estimate_flightpath(self, min_separation:float=2,
+                            time_bin_size:float=.5,
+                            fit_line:bool=True,
+                            min_z_q:float = .75,
+                            flightline_t_break:float=5)->'pl.DataFrame':
+        """Estimate flightpath by triangulating position from rays drawn between first and last return
+
+        This implementation is optimized for tiled data. It assumes that each flight path can be represented by a
+        straight line at a constant altitude above MSL (not ground).
+
+        Args:
+            min_separation (float): Minimum separation distance between first and last return considered when drawing rays
+            time_bin_size (float): Time bin size used when estimating current plane position
+            fit_line (bool): If True, fits a straight line to each flight path.
+                If False, returns all estimates of current location.
+            min_z_q (float): Clip location estimates to only include z values above this quantile of z
+            flightline_t_break (float): Separates returns to a new flightline if there is a gap in GPS time between
+                returns longer than this threshold."""
         import polars
         import numpy as np
-        import time
         from concurrent.futures import ThreadPoolExecutor
-        from numba import njit, prange
         from sklearn.linear_model import LinearRegression
+        from voxelmon.utils import interpolate_flightpath
 
         self.points = self.points.sort(['GpsTime','ReturnNumber'])
 
@@ -788,10 +811,7 @@ class ALS:
 
             return points
 
-        flightlines = []
         with ThreadPoolExecutor() as executor:
-        #for view in points_views:
-        #    flightlines.append(get_convergence_points(view))
             flightlines = list(executor.map(get_convergence_points, points_views))
 
 
@@ -799,7 +819,10 @@ class ALS:
             flight_points = flightlines[i]
             flightlines[i] = polars.DataFrame({'X':flight_points[:,0],'Y':flight_points[:,1], 'Z':flight_points[:,2],
                                               'GpsTime':flight_points[:,3],'FlightLine':i})
-        return polars.concat(flightlines)
+
+        flightpath = polars.concat(flightlines)
+        self.origin = interpolate_flightpath(self.points,flightpath)
+        return flightpath
 
     def quick_lad(self,bin_size_xy = 10, bin_size_z = 2, min_height = 1, extinction_coefficient=.5, return_type='polars'):
         """Estimate leaf area density with assumption that pulses were directed straight down
@@ -851,6 +874,41 @@ class ALS:
         elif return_type == 'xarray':
             import xarray as xr
             return xr.DataArray(lad,coords={'X':x_centers,'Y':y_centers,'Z':z_centers},dims=['X','Y','Z'],name='LAD')
+
+    def execute_default_processing(self,export_folder:str,
+                                   plot_name:str,
+                                   cell_size:float=1,
+                                   extents:Union[Sequence[float],None] = None,
+                                   max_occlusion=.8,
+                                   sigma1=0,
+                                   min_pad_foliage=.01,
+                                   max_pad_foliage=6):
+        from voxelmon.utils import _default_postprocessing, _default_folder_setup
+
+        _default_folder_setup(export_folder)
+
+        # TODO: Write utility function to interpolate origin from flightpath
+
+        pulses = Pulses.from_point_cloud_array(self.points, origin=self.origin)
+
+        if extents is None:
+            min_extents = self.points.select(['X','Y','Z']).min().to_numpy()
+            max_extents = self.points.select(['X', 'Y', 'Z']).max().to_numpy()
+            extents = np.concatenate([min_extents,max_extents]).flatten()
+
+        pulses_thin = pulses.crop(extents)
+
+        grid = Grid(extents=extents, cell_size=cell_size)
+
+        grid.create_dem_decreasing_window(pulses_thin,window_sizes=[5,2.5,1],height_thresholds=[2.5,1.25,.5])
+
+        grid.calculate_pulse_metrics(pulses)
+
+        profile, summary = _default_postprocessing(grid=grid, plot_name=plot_name, export_folder=export_folder,
+                                                   plot_radius=None, max_occlusion=max_occlusion, sigma1=sigma1,
+                                                   min_pad_foliage=min_pad_foliage, max_pad_foliage=max_pad_foliage)
+
+        return profile, summary
 
 
 class PtxBlk360G1:
@@ -1080,7 +1138,6 @@ class PtxBlk360G1:
 
         _default_folder_setup(export_folder)
 
-
         pulses = Pulses.from_point_cloud_array(self.xyz, self.origin)
 
         maxExtents = [-plot_radius - plot_radius_buffer, -plot_radius - plot_radius_buffer, -plot_radius, plot_radius + plot_radius_buffer, plot_radius + plot_radius_buffer, max_height]
@@ -1092,14 +1149,11 @@ class PtxBlk360G1:
         gridExtents[2] = minHeight
         gridExtents[5] = max_height
 
-        # pulses_thin = pulses_thin.thin_distance_weighted_random(.25)
         grid = Grid(extents=gridExtents, cell_size=cell_size)
 
         grid.create_dem_decreasing_window(pulses_thin)
 
         grid.calculate_pulse_metrics(pulses)
-
-        pulses_thin.to_csv(os.path.join(export_folder, 'Points/', plot_name) + '.csv')
 
         profile, summary = _default_postprocessing(grid=grid, plot_name=plot_name, export_folder=export_folder, plot_radius=plot_radius, max_occlusion=max_occlusion, sigma1=sigma1, min_pad_foliage=min_pad_foliage, max_pad_foliage=max_pad_foliage)
 
