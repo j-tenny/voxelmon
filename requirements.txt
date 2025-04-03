@@ -8,3 +8,4 @@ seaborn
 pyarrow
 matplotlib
 statsmodels
+xarray

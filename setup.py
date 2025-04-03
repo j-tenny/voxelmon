@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='voxelmon',
-    version='0.0.1',
+    version='0.0.2',
     author='Johnathan Tenny',
     author_email='jt893@nau.edu',
     description='',
