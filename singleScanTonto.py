@@ -10,7 +10,7 @@ import seaborn as sns
 import math
 import statsmodels.formula.api as smf
 from multiprocessing import Process, freeze_support, set_start_method
-from voxelmon import PtxBlk360G1, BulkDensityProfileModelFitter, get_files_list, directory_to_pandas, plot_side_view, calculate_species_proportions, smooth
+from voxelmon import TLS_PTX, BulkDensityProfileModelFitter, get_files_list, directory_to_pandas, plot_side_view, calculate_species_proportions, smooth
 
 ########################################################################################################################
 
@@ -120,13 +120,13 @@ def main():
             base_file_name = os.path.splitext(os.path.basename(ptx_file))[0].split('-')[0]
 
             # Read ptx file
-            ptx = PtxBlk360G1(ptx_file, applyTranslation=False, applyRotation=True, dropNull=False)
+            ptx = TLS_PTX(ptx_file, apply_translation=False, apply_rotation=True, drop_null=False)
 
             # Calculate plant area density
-            profile, summary = ptx.execute_default_processing(export_folder=export_folder, plot_name=base_file_name, cell_size=cell_size,
-                                                              plot_radius=plot_radius, plot_radius_buffer=grid_radius-plot_radius,
-                                                              max_height=max_grid_height, max_occlusion=max_occlusion,
-                                                              sigma1=0, min_pad_foliage=.01, max_pad_foliage=6)
+            grid, profile, summary = ptx.execute_default_processing(export_dir=export_folder, plot_name=base_file_name, cell_size=cell_size,
+                                                                    plot_radius=plot_radius, plot_radius_buffer=grid_radius-plot_radius,
+                                                                    max_height=max_grid_height, max_occlusion=max_occlusion,
+                                                                    sigma1=0, min_pad_foliage=.01, max_pad_foliage=6)
 
             # Show vertical profile
             plt.plot(profile['pad'], profile['height'])

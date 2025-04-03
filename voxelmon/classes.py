@@ -3,7 +3,7 @@ import polars as pl
 import pandas as pd
 import pandas as pd
 from numba import jit,njit,guvectorize,prange,float32,void,uint16,int64,uint32,int32,float64
-from typing import Union, Sequence
+from typing import Union, Sequence, Tuple
 
 import voxelmon
 
@@ -43,6 +43,41 @@ class Grid:
 
         self.geometric_features = np.zeros([self.centers.shape[0], 4], np.float32) - 50
 
+    @classmethod
+    def from_file(cls, pad_filepath:str, dem_filepath) -> 'Grid':
+        """Read Grid from export files
+
+        Args:
+            pad_filepath (str): path to 3D pad export file
+            dem_filepath (str): path to 2D dem export file"""
+
+        import pandas as pd
+        import xarray as xr
+
+        df = pd.read_csv(pad_filepath,index_col=[0,1,2])
+        ds = xr.Dataset.from_dataframe(df)
+        #centers = df.reset_index().iloc[:,:3].to_numpy()
+        cell_size = float(ds.coords['x'][1]-ds.coords['x'][0])
+        extents_min = np.stack([v.values.min() for v in ds.coords.values()]) - cell_size/2
+        extents_max = np.stack([v.values.max() for v in ds.coords.values()]) + cell_size/2
+        #extents_min = centers.min(axis=0) - cell_size/2
+        #extents_max = centers.max(axis=0) + cell_size/2
+        grid = cls(extents=np.concatenate([extents_min,extents_max]), cell_size=cell_size)
+
+        grid.p_directed = ds['pDirected'].to_numpy()
+        grid.p_transmitted = ds['pTransmitted'].to_numpy()
+        grid.p_intercepted = ds['pIntercepted'].to_numpy()
+        grid.classification = ds['classification'].to_numpy()
+        grid.occlusion = ds['occlusion'].to_numpy()
+        grid.pad = ds['pad'].to_numpy()
+        grid.hag = ds['hag'].to_numpy()
+
+        df = pd.read_csv(dem_filepath, index_col=[0, 1])
+        ds = xr.Dataset.from_dataframe(df)
+
+        grid.dem = ds['z'].to_numpy()
+
+        return grid
 
     @classmethod
     def from_dims(cls, cell_size:float, grid_half_length_x:float, grid_half_length_y:float, grid_height:float, grid_bottom:float=None)->'Grid':
@@ -362,9 +397,9 @@ class Grid:
         grid[maskMissing] = interp2D_w_cubic_extrapolation(pointsValid, valuesValid, pointsMissing)
 
         self.dem = grid
-        self.hag = self.centers[:,2] - np.tile(grid.flatten(),self.shape[2])
+        self.hag = (self.centers[:,2] - np.tile(grid.flatten(),self.shape[2])).reshape(self.shape,order='F')
 
-    def calculate_dem_metrics(self) -> dict:
+    def calculate_dem_metrics(self, clip_radius=None) -> dict:
         """Summarize overall terrain slope, aspect, roughness, and concavity"""
         import statsmodels.api as sm
         import pandas as pd
@@ -372,10 +407,11 @@ class Grid:
 
         dem_df = pd.DataFrame({'x': self.centers_xy[:, 0], 'y': self.centers_xy[:, 1], 'z':self.dem.flatten()})
 
-        # Calculate horizontal distance from center
-        dem_df['HD'] = np.sqrt(dem_df['x'] ** 2 + dem_df['y'] ** 2)
-        # Filter outside of plot radius
-        dem_df = dem_df[dem_df['HD'] < 11.3]
+        if clip_radius is not None:
+            # Calculate horizontal distance from center
+            dem_df['HD'] = np.sqrt(dem_df['x'] ** 2 + dem_df['y'] ** 2)
+            # Filter outside of plot radius
+            dem_df = dem_df[dem_df['HD'] < clip_radius]
         dem_df = dem_df[~np.isnan(dem_df['z'])]
         dem_df['intercept'] = 1
 
@@ -413,11 +449,13 @@ class Grid:
 
         # Calculate terrain shape metrics
         dem_df['resid'] = dem_df['z'] - model.predict(dem_df[['intercept', 'x', 'y']])
-        hd_half = 11.3 / 2
-        sum_inner = dem_df[dem_df['HD'] < hd_half]['resid'].sum()
-        sum_outer = dem_df[dem_df['HD'] >= hd_half]['resid'].sum()
-        results['terrain_concavity'] = sum_inner - sum_outer
         results['terrain_roughness'] = np.sqrt(np.mean(dem_df['resid'] ** 2))
+        if clip_radius is not None:
+            hd_half = clip_radius / 2
+            sum_inner = dem_df[dem_df['HD'] < hd_half]['resid'].sum()
+            sum_outer = dem_df[dem_df['HD'] >= hd_half]['resid'].sum()
+            results['terrain_concavity'] = sum_inner - sum_outer
+
         return results
 
     def calculate_canopy_cover(self, clip_radius:Union[float,None] = 11.3,
@@ -461,19 +499,40 @@ class Grid:
         self.classification[self.pad > max_pad_foliage] = 5
         self.classification_key = {-2: 'empty', -1: 'occluded', 3: 'foliage', 5: 'nonfoliage'}
 
-    def gaussian_filter_PAD(self,sigma=.1):
+    def interpolate_occlusion_idw(self,max_occlusion=.8,max_pad_foliage=6,min_height=1,k=8):
+        from scipy.spatial import cKDTree
+        valid = ((self.occlusion <= max_occlusion) & (self.pad>=0) &
+                 (self.pad<max_pad_foliage) & (self.hag>=min_height)).ravel('f')
+        points_valid = self.centers[valid]
+        values_valid = self.pad.ravel('f')[valid]
+        occluded = (self.occlusion.ravel('f') > max_occlusion) & (self.hag.ravel('f')>=0)
+        points_occluded = self.centers[occluded]
+
+        tree = cKDTree(points_valid)
+        distances, idx = tree.query(points_occluded, k=k)
+
+        # Avoid division by zero
+        distances = np.where(distances == 0, 1e-10, distances)
+
+        weights = 1 / distances ** 2
+        weighted_values = values_valid[idx] * weights
+        interpolated_values = np.sum(weighted_values, axis=1) / np.sum(weights, axis=1)
+
+        pad_1d = self.pad.ravel('f')
+        pad_1d[occluded] = interpolated_values
+
+        self.pad = pad_1d.reshape(self.pad.shape, order='f')
+
+
+    def gaussian_filter_PAD(self,sigma=.1, z_only=True):
         """Apply gaussian smoothing filter to PAD grid"""
 
         from scipy import ndimage,interpolate
-        # Interpolate missing values
-        #occlusionFlat = self.occlusion.flatten()
-        #pointsValid = self.centers[occlusionFlat<=maxOcclusion]
-        #valuesValid = occlusionFlat[occlusionFlat<=maxOcclusion]
-        #pointsMissing = self.centers[occlusionFlat>maxOcclusion]
-        #vals = interpolate.griddata(pointsValid, valuesValid, pointsMissing, method='linear')
-        #self.pad[self.occlusion>maxOcclusion] = vals.reshape(self.shape)
 
-        self.pad = ndimage.gaussian_filter(self.pad,sigma)
+        if z_only:
+            self.pad = ndimage.gaussian_filter1d(self.pad, sigma, axis=2)
+        else:
+            self.pad = ndimage.gaussian_filter(self.pad, sigma)
 
 
     def bin2D(self,pulses,function)->'pl.DataFrame':
@@ -499,7 +558,7 @@ class Grid:
     def to_polars(self)->'pl.DataFrame':
         """Convert grid to polars dataframe"""
         import polars
-        df = polars.DataFrame({'x': self.centers[:, 0], 'y': self.centers[:, 1], 'z': self.centers[:, 2], 'hag':self.hag,
+        df = polars.DataFrame({'x': self.centers[:, 0], 'y': self.centers[:, 1], 'z': self.centers[:, 2], 'hag':self.hag.flatten('F'),
                                 'pDirected': self.p_directed.flatten('F'), 'pTransmitted': self.p_transmitted.flatten('F'),
                                 'pIntercepted': self.p_intercepted.flatten('F'), 'occlusion': self.occlusion.flatten('F'),
                                 'pad': self.pad.flatten('F'), 'linearity': self.geometric_features[:, 0],
@@ -874,6 +933,8 @@ class ALS:
         elif return_type == 'xarray':
             import xarray as xr
             return xr.DataArray(lad,coords={'X':x_centers,'Y':y_centers,'Z':z_centers},dims=['X','Y','Z'],name='LAD')
+        elif return_type == 'voxelmon':
+            grid = Grid()
 
     def execute_default_processing(self,export_folder:str,
                                    plot_name:str,
@@ -882,12 +943,15 @@ class ALS:
                                    max_occlusion=.8,
                                    sigma1=0,
                                    min_pad_foliage=.01,
-                                   max_pad_foliage=6):
+                                   max_pad_foliage=6,
+                                   export_grid=True,
+                                   export_dem=True,
+                                   export_pad_summary=True,
+                                   export_plot_summary=True):
         from voxelmon.utils import _default_postprocessing, _default_folder_setup
 
-        _default_folder_setup(export_folder)
-
-        # TODO: Write utility function to interpolate origin from flightpath
+        _default_folder_setup(export_folder,pad_dir=export_grid,dem_dir=export_dem,points_dir=False,
+                              pad_summary_dir=export_pad_summary,plot_summary_dir=export_plot_summary)
 
         pulses = Pulses.from_point_cloud_array(self.points, origin=self.origin)
 
@@ -905,24 +969,41 @@ class ALS:
         grid.calculate_pulse_metrics(pulses)
 
         profile, summary = _default_postprocessing(grid=grid, plot_name=plot_name, export_folder=export_folder,
-                                                   plot_radius=None, max_occlusion=max_occlusion, sigma1=sigma1,
-                                                   min_pad_foliage=min_pad_foliage, max_pad_foliage=max_pad_foliage)
+                                                   plot_radius=None, max_occlusion=max_occlusion, fill_occlusion=True,
+                                                   sigma1=sigma1, min_pad_foliage=min_pad_foliage, max_pad_foliage=max_pad_foliage,
+                                                   export_grid=export_grid, export_dem=export_dem,
+                                                   export_pad_summary=export_pad_summary, export_plot_summary=export_plot_summary)
 
-        return profile, summary
+        return grid,   profile, summary
 
 
-class PtxBlk360G1:
-    def __init__(self,filepath,applyTranslation=True,applyRotation=True,dropNull=False,offset=[0,0,0]):
+class TLS_PTX:
+    """Class to read and preprocess terrestrial lidar data from a single scan in PTX format, tested with BLK_360 Gen 1"""
+    def __init__(self, filepath:str,
+                 apply_translation:bool=True,
+                 apply_rotation:bool=True,
+                 drop_null:bool=False,
+                 offset:Sequence[float]=[0,0,0]):
+        """Read and preprocess data from a single terrestrial lidar scan in PTX format
+
+        Args:
+            filepath (str): path to .ptx file
+            apply_translation (bool): if True, applies translation to coordinates using transform in ptx header
+            apply_rotation (bool): if True, applies rotation to coordinates using transform in ptx header
+            drop_null (bool): if False, replaces null returns with pseudo-returns by interpolating scan angle along
+                vertical scan lines and creating a return 99m from the sensor origin. If True, drops null returns.
+            offset (Sequence[float]): Applies an additional translation offset after applying the ptx transform.
+        """
         self.path = filepath
-        self.load_points(dropNull=dropNull)
-        self.get_transform()
-        self.apply_transform(self.transform,applyTranslation=applyTranslation,applyRotation=applyRotation)
+        self._load_points(drop_null=drop_null)
+        self._get_transform()
+        self.apply_transform(self.transform, apply_translation=apply_translation, apply_rotation=apply_rotation)
         self.apply_offset(offset)
-        self.get_polar_coordinates()
-        if dropNull==False:
-            self.create_pseudo_returns()
+        self._get_polar_coordinates()
+        if drop_null==False:
+            self._create_pseudo_returns()
 
-    def load_points(self,dropNull=False):
+    def _load_points(self, drop_null=False):
         import polars
         # Get num cols
         firstRow = np.loadtxt(self.path, np.float64, skiprows=10, max_rows=1)
@@ -944,7 +1025,7 @@ class PtxBlk360G1:
         self.rowsCols = np.vstack([rows.flatten(), cols.flatten()]).T
 
         nullMask = ((points[:, 0] == 0) & (points[:, 1] == 0) & (points[:, 2] == 0))
-        if dropNull:
+        if drop_null:
             points = points[~nullMask]
             self.rowsCols = self.rowsCols[nullMask]
             self.nullMask = ~np.isnan(points[:,0])
@@ -959,16 +1040,16 @@ class PtxBlk360G1:
         else:
             self.rgb = self.intensity.repeat(3).reshape([self.npoints, 3])
 
-    def filter(self, boolArray):
-        self.xyz = self.xyz[boolArray]
-        self.ptrh = self.ptrh[boolArray]
-        self.rgb = self.rgb[boolArray]
-        self.intensity = self.intensity[boolArray]
-        self.rowsCols = self.rowsCols[boolArray]
+    def filter(self, mask):
+        self.xyz = self.xyz[mask]
+        self.ptrh = self.ptrh[mask]
+        self.rgb = self.rgb[mask]
+        self.intensity = self.intensity[mask]
+        self.rowsCols = self.rowsCols[mask]
         self.npoints = self.intensity.size
 
 
-    def get_transform(self):
+    def _get_transform(self):
         import os
         aux_transform = self.path[:-4] + '.mat.txt'
         if os.path.exists(aux_transform):
@@ -978,11 +1059,11 @@ class PtxBlk360G1:
         self.originOriginal = self.transform[:3,3]
         self.origin = np.array([0.,0.,0.])
 
-    def apply_transform(self,transform,applyTranslation=True,applyRotation=True):
+    def apply_transform(self, transform, apply_translation=True, apply_rotation=True):
         toApply = np.eye(4,4)
-        if applyTranslation:
+        if apply_translation:
             toApply[:,3] = transform[:,3]
-        if applyRotation:
+        if apply_rotation:
             toApply[:,:3] = transform[:,:3]
         xyzMat = np.hstack([self.xyz,np.ones([self.npoints,1])])
         res = np.matmul(toApply,xyzMat.T).T
@@ -999,7 +1080,7 @@ class PtxBlk360G1:
         self.origin[2] += xyz[2]
 
 
-    def get_polar_coordinates(self):
+    def _get_polar_coordinates(self):
         xyzTemp = self.xyz.copy()
         xyzTemp[:, 0] -= self.origin[0]
         xyzTemp[:, 1] -= self.origin[1]
@@ -1051,7 +1132,7 @@ class PtxBlk360G1:
     def to_voxelmon_pulses(self):
         return voxelmon.Pulses.from_point_cloud_array(self.xyz,self.origin)
 
-    def create_pseudo_returns(self,pseudoRDValue=99):
+    def _create_pseudo_returns(self, pseudoRDValue=99):
 
         @njit([void(float64[:,:],float64[:,:],int32,int32)],parallel=False)
         def create_pseudo_returns_nb(xyz,ptrh,nrows,ncols):
@@ -1132,11 +1213,40 @@ class PtxBlk360G1:
         keep = self.ptrh[:, 0] < 3.1
         self.filter(keep)
 
-    def execute_default_processing(self, export_folder, plot_name, cell_size=.1, plot_radius=11.3, plot_radius_buffer=.7, max_height=99, max_occlusion=.8, sigma1=0, min_pad_foliage=.01, max_pad_foliage=6):
-        import os
+    def execute_default_processing(self,
+                                   export_dir:str,
+                                   plot_name:str,
+                                   cell_size:float=.1,
+                                   plot_radius:float=11.3,
+                                   plot_radius_buffer:float=.7,
+                                   max_height:float=99,
+                                   max_occlusion:float=.8,
+                                   sigma1:float=0,
+                                   min_pad_foliage:float=.01,
+                                   max_pad_foliage:float=6)->Tuple['Grid','pd.DataFrame','pd.DataFrame']:
+        """Execute default processing pipeline and write outputs including PAD, DEM, and summaries to export_folder
+
+        Args:
+            export_dir (str): path to folder where exports will be stored.
+                export_dir and sub dirs will be created automatically.
+            plot_name (str): unique ID for the plot.
+            cell_size (float): voxel cell size in meters.
+            plot_radius (float): radius used to clip data to a circular plot around the sensor.
+            plot_radius_buffer (float): buffer distance extending from the plot radius to the grid extents.
+            max_height (float): maximum height above sensor used to set grid height.
+            max_occlusion (float): threshold value used to classify voxels as occluded. Should be between 0 and 1.
+            sigma1 (float): sigma value used to apply gaussian smoothing filter to PAD grid. If 0, no filter is applied.
+            min_pad_foliage (float): threshold for minimum PAD when classifying voxels as foliage. PAD below threshold
+                is considered empty.
+            max_pad_foliage (float): threshold for maximum PAD when classifying voxels as foliage. PAD above threshold
+                is considered non-foliage.
+
+        Returns: Grid (Grid), Profile (pd.DataFrame), Summary (pd.DataFrame)
+
+        """
         from voxelmon.utils import _default_postprocessing,_default_folder_setup
 
-        _default_folder_setup(export_folder)
+        _default_folder_setup(export_dir)
 
         pulses = Pulses.from_point_cloud_array(self.xyz, self.origin)
 
@@ -1155,22 +1265,55 @@ class PtxBlk360G1:
 
         grid.calculate_pulse_metrics(pulses)
 
-        profile, summary = _default_postprocessing(grid=grid, plot_name=plot_name, export_folder=export_folder, plot_radius=plot_radius, max_occlusion=max_occlusion, sigma1=sigma1, min_pad_foliage=min_pad_foliage, max_pad_foliage=max_pad_foliage)
+        profile, summary = _default_postprocessing(grid=grid, plot_name=plot_name, export_folder=export_dir, plot_radius=plot_radius, max_occlusion=max_occlusion, sigma1=sigma1, min_pad_foliage=min_pad_foliage, max_pad_foliage=max_pad_foliage)
 
-        return profile, summary
+        return grid, profile, summary
 
-class PtxBlk360G1_Group:
-    def __init__(self,filepathList):
-        ptxGroup = [PtxBlk360G1(filepathList[0], applyTranslation=False, applyRotation=True, dropNull=False)]
+class TLS_PTX_Group:
+    """Class to read and preprocess a group of TLS scans in PTX format, tested with BLK 360 Gen 1"""
+    def __init__(self, filepath_list:Sequence[str]):
+        """Read and preprocess a group of TLS scans in PTX format
+
+        Args:
+            filepath_list: list of filepaths to ptx files that are part of this scan group"""
+
+        ptxGroup = [TLS_PTX(filepath_list[0], apply_translation=False, apply_rotation=True, drop_null=False)]
         offset = -ptxGroup[0].originOriginal
-        for ptxFile in filepathList[1:]:
-            ptx = PtxBlk360G1(ptxFile, applyTranslation=True, applyRotation=True, dropNull=False, offset=offset)
+        for ptxFile in filepath_list[1:]:
+            ptx = TLS_PTX(ptxFile, apply_translation=True, apply_rotation=True, drop_null=False, offset=offset)
             ptxGroup.append(ptx)
 
         self.ptxGroup = ptxGroup
 
-    def execute_default_processing(self, export_folder, plot_name, cell_size=.1, plot_radius=11.3, plot_radius_buffer=.7, max_height=99, max_occlusion=.8, sigma1=.1, min_pad_foliage=.01, max_pad_foliage=6):
-        import os
+    def execute_default_processing(self, export_folder:str,
+                                   plot_name:str,
+                                   cell_size:float=.1,
+                                   plot_radius:float=11.3,
+                                   plot_radius_buffer:float=.7,
+                                   max_height:float=99,
+                                   max_occlusion:float=.8,
+                                   sigma1:float=0,
+                                   min_pad_foliage:float=.01,
+                                   max_pad_foliage:float=6)->Tuple['Grid','pd.DataFrame','pd.DataFrame']:
+        """Execute default processing pipeline and write outputs including PAD, DEM, and summaries to export_folder
+
+        Args:
+            export_dir (str): path to folder where exports will be stored.
+                export_dir and sub dirs will be created automatically.
+            plot_name (str): unique ID for the plot.
+            cell_size (float): voxel cell size in meters.
+            plot_radius (float): radius used to clip data to a circular plot around the sensor.
+            plot_radius_buffer (float): buffer distance extending from the plot radius to the grid extents.
+            max_height (float): maximum height above sensor used to set grid height.
+            max_occlusion (float): threshold value used to classify voxels as occluded. Should be between 0 and 1.
+            sigma1 (float): sigma value used to apply gaussian smoothing filter to PAD grid. If 0, no filter is applied.
+            min_pad_foliage (float): threshold for minimum PAD when classifying voxels as foliage. PAD below threshold
+                is considered empty.
+            max_pad_foliage (float): threshold for maximum PAD when classifying voxels as foliage. PAD above threshold
+                is considered non-foliage.
+
+        Returns: Grid (Grid), Profile (pd.DataFrame), Summary (pd.DataFrame)
+        """
         from voxelmon.utils import _default_folder_setup, _default_postprocessing
 
         _default_folder_setup(export_folder)
@@ -1208,7 +1351,7 @@ class PtxBlk360G1_Group:
 
         profile, summary = _default_postprocessing(grid=grid, plot_name=plot_name, export_folder=export_folder, plot_radius=plot_radius, max_occlusion=max_occlusion, sigma1=sigma1, min_pad_foliage=min_pad_foliage, max_pad_foliage=max_pad_foliage)
 
-        return profile, summary
+        return grid, profile, summary
 
 
 class BulkDensityProfileModel:

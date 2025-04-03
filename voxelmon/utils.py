@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from typing import Union
+from typing import Union, Sequence, Tuple
 
 
 def get_files_list(directory, keyword, recursive=True):
@@ -458,37 +458,61 @@ def interpolate_flightpath(points, flightpath):
     z = interpolator_z(points['GpsTime'])
     return np.stack([x,y,z],1)
 
-def _default_folder_setup(export_folder):
+def _default_folder_setup(export_folder,
+                          pad_dir=True,
+                          dem_dir=True,
+                          points_dir=True,
+                          pad_summary_dir=True,
+                          plot_summary_dir=True):
     from pathlib import Path
     import os
 
     if not Path(export_folder).exists():
         os.makedirs(export_folder)
-    if not Path(export_folder).joinpath('DEM').exists():
+    if dem_dir and not Path(export_folder).joinpath('DEM').exists():
         os.mkdir(Path(export_folder).joinpath('DEM'))
-    if not Path(export_folder).joinpath('Points').exists():
+    if points_dir and not Path(export_folder).joinpath('Points').exists():
         os.mkdir(Path(export_folder).joinpath('Points'))
-    if not Path(export_folder).joinpath('PAD').exists():
+    if pad_dir and not Path(export_folder).joinpath('PAD').exists():
         os.mkdir(Path(export_folder).joinpath('PAD'))
-    if not Path(export_folder).joinpath('PAD_Summary').exists():
+    if pad_summary_dir and not Path(export_folder).joinpath('PAD_Summary').exists():
         os.mkdir(Path(export_folder).joinpath('PAD_Summary'))
-    if not Path(export_folder).joinpath('Plot_Summary').exists():
+    if plot_summary_dir and not Path(export_folder).joinpath('Plot_Summary').exists():
         os.mkdir(Path(export_folder).joinpath('Plot_Summary'))
 
-def _default_postprocessing(grid, plot_name, export_folder, plot_radius=11.3, max_occlusion=.8, sigma1=.1, min_pad_foliage=.01, max_pad_foliage=6):
+def _default_postprocessing(grid, plot_name,
+                            export_folder,
+                            plot_radius=11.3,
+                            max_occlusion=.8,
+                            sigma1=.1,
+                            fill_occlusion=False,
+                            min_pad_foliage=.01,
+                            max_pad_foliage=6,
+                            export_grid=True,
+                            export_dem=True,
+                            export_pad_summary=True,
+                            export_plot_summary=True
+                            )->Tuple['pd.DataFrame','pd.DataFrame']:
     import os
     import pandas as pd
+    if fill_occlusion:
+        grid.interpolate_occlusion_idw(max_occlusion=max_occlusion, max_pad_foliage=max_pad_foliage, k=8)
+        max_occlusion=999
     grid.filter_pad_noise_ivf()
     grid.gaussian_filter_PAD(sigma=sigma1)
     grid.classify_foliage_with_PAD(max_occlusion=max_occlusion, min_pad_foliage=min_pad_foliage, max_pad_foliage=max_pad_foliage)
     profile = grid.summarize_by_height(clip_radius=plot_radius)
-    summary = grid.calculate_dem_metrics()
-    summary['canopy_cover'] = grid.calculate_canopy_cover()
+    summary = grid.calculate_dem_metrics(clip_radius=plot_radius)
+    summary['canopy_cover'] = grid.calculate_canopy_cover(clip_radius=plot_radius)
     summary['plot_id'] = plot_name
     summary = pd.DataFrame(summary, index=[0])
-    grid.export_grid_as_csv(os.path.join(export_folder, 'PAD/', plot_name) + '.csv')
-    grid.export_dem_as_csv(os.path.join(export_folder, 'DEM/', plot_name) + '.csv')
-    profile.write_csv(os.path.join(export_folder, 'PAD_Summary/', plot_name) + '.csv')
-    summary.to_csv(os.path.join(export_folder, 'Plot_Summary/', plot_name) + '.csv', index=False)
+    if export_grid:
+        grid.export_grid_as_csv(os.path.join(export_folder, 'PAD/', plot_name) + '.csv')
+    if export_dem:
+        grid.export_dem_as_csv(os.path.join(export_folder, 'DEM/', plot_name) + '.csv')
+    if export_pad_summary:
+        profile.write_csv(os.path.join(export_folder, 'PAD_Summary/', plot_name) + '.csv')
+    if export_plot_summary:
+        summary.to_csv(os.path.join(export_folder, 'Plot_Summary/', plot_name) + '.csv', index=False)
     profile = profile.to_pandas()
     return profile,summary

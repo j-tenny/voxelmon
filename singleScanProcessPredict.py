@@ -8,7 +8,7 @@ import warnings
 import matplotlib.pyplot as plt
 
 import voxelmon.utils
-from voxelmon import Grid,Pulses,PtxBlk360G1,get_files_list,plot_side_view, BulkDensityProfileModel
+from voxelmon import Grid,Pulses,TLS_PTX,get_files_list,plot_side_view, BulkDensityProfileModel
 import pyrothermel
 
 input_folder = r'D:\DataWork\SanCarlos\SanCarlosFeb25\PTX'
@@ -44,10 +44,10 @@ if process:
         print("Starting file ", i, " of ",len(files))
         baseFileName = os.path.splitext(os.path.basename(ptxFile))[0].split('-')[0]
 
-        ptx = PtxBlk360G1(ptxFile,applyTranslation=True,applyRotation=True,dropNull=False)
-        profile, plot_summary = ptx.execute_default_processing(export_folder=exportFolder, plot_name=baseFileName, cell_size=cellSize,
-                                                         plot_radius=plotRadius, max_height=maxGridHeight, max_occlusion=maxOcclusion,
-                                                         sigma1=0, min_pad_foliage=.01, max_pad_foliage=6)
+        ptx = TLS_PTX(ptxFile, apply_translation=True, apply_rotation=True, drop_null=False)
+        grid, profile, plot_summary = ptx.execute_default_processing(export_dir=exportFolder, plot_name=baseFileName, cell_size=cellSize,
+                                                                     plot_radius=plotRadius, max_height=maxGridHeight, max_occlusion=maxOcclusion,
+                                                                     sigma1=0, min_pad_foliage=.01, max_pad_foliage=6)
         profile['EVENT_ID'] = baseFileName
         profile['CANOPY_CLASS'] = field_summary.loc[baseFileName,'CANOPY_CLASS']
         profile['CBD'] = canopyModel.predict(profile, lidar_value_col='pad', height_col='height', plot_id_col='EVENT_ID')

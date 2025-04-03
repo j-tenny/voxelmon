@@ -10,7 +10,7 @@ import seaborn as sns
 import math
 import statsmodels.formula.api as smf
 from multiprocessing import freeze_support, set_start_method
-from voxelmon import PtxBlk360G1, PtxBlk360G1_Group, BulkDensityProfileModelFitter, get_files_list, plot_side_view, calculate_species_proportions,smooth
+from voxelmon import TLS_PTX, TLS_PTX_Group, BulkDensityProfileModelFitter, get_files_list, plot_side_view, calculate_species_proportions,smooth
 
 ########################################################################################################################
 
@@ -118,9 +118,9 @@ def main():
             print("Starting file ", i, " of ", len(files_grouped))
             base_file_name = get_plot_id(filegroup[0])
 
-            profile,plot_summary = PtxBlk360G1_Group(filegroup).execute_default_processing(export_folder=export_folder, plot_name=base_file_name, cell_size=cell_size,
-                                                                                  plot_radius=plot_radius, max_height=max_grid_height, max_occlusion=max_occlusion,
-                                                                                  sigma1=.1, min_pad_foliage=.01, max_pad_foliage=6)
+            grid, profile, plot_summary = TLS_PTX_Group(filegroup).execute_default_processing(export_folder=export_folder, plot_name=base_file_name, cell_size=cell_size,
+                                                                                              plot_radius=plot_radius, max_height=max_grid_height, max_occlusion=max_occlusion,
+                                                                                              sigma1=.1, min_pad_foliage=.01, max_pad_foliage=6)
 
 
             plt.plot(profile['pad'], profile['height'])
