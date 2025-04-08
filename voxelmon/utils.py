@@ -77,7 +77,7 @@ def bin2D(pulses,function,cellSize,asArray = True,binExtents=None):
     if asArray:
         return result[:, -1].to_numpy().reshape(binExtents[2]-binExtents[0],binExtents[3]-binExtents[1],order='f')
     else:
-        result
+        return result
 
 
 def bin3D(pulses, function, cellSize,asArray = True, binExtents=None):
@@ -125,7 +125,15 @@ def bin3D(pulses, function, cellSize,asArray = True, binExtents=None):
     else:
         return result
 
-def open_file_pdal(filepath,bounds=None,calculate_height=True):
+def open_file_pdal(filepath,bounds=None,calculate_height=True)->Tuple['pl.DataFrame',str]:
+    """Read a file to a polars dataframe with pdal. Returns pl.DataFrame and crs
+
+    Args:
+        filepath (str): Path to ALS file readable by pdal. Type is inferred by extension.
+        bounds (str): Clip extents of the resource in 2 or 3 dimensions, formatted as pdal-compatible string,
+            e.g.: ([xmin, xmax], [ymin, ymax], [zmin, zmax]). If omitted, the entire dataset will be selected.
+            The bounds can be followed by a slash (‘/’) and a spatial reference specification to apply to the bounds.
+                """
     import pdal
     import polars as pl
 

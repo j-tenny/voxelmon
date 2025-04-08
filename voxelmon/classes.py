@@ -528,11 +528,11 @@ class Grid:
         """Apply gaussian smoothing filter to PAD grid"""
 
         from scipy import ndimage,interpolate
-
-        if z_only:
-            self.pad = ndimage.gaussian_filter1d(self.pad, sigma, axis=2)
-        else:
-            self.pad = ndimage.gaussian_filter(self.pad, sigma)
+        if sigma>0:
+            if z_only:
+                self.pad = ndimage.gaussian_filter1d(self.pad, sigma, axis=2)
+            else:
+                self.pad = ndimage.gaussian_filter(self.pad, sigma)
 
 
     def bin2D(self,pulses,function)->'pl.DataFrame':
@@ -749,7 +749,7 @@ class Pulses:
             self.df.write_csv(filepath)
 
 class ALS:
-    def __init__(self,filepath, bounds:str = None):
+    def __init__(self,filepath, bounds:str = None, calculate_height:bool=False):
         """Initialize ALS reader
 
         Args:
@@ -757,11 +757,12 @@ class ALS:
             bounds (str): Clip extents of the resource in 2 or 3 dimensions, formatted as pdal-compatible string,
                 e.g.: ([xmin, xmax], [ymin, ymax], [zmin, zmax]). If omitted, the entire dataset will be selected.
                 The bounds can be followed by a slash (‘/’) and a spatial reference specification to apply to the bounds.
+            calculate_height (bool): Calculate height above ground for each pulse with pdal delauney method
             """
         from voxelmon.utils import open_file_pdal
         self.path = filepath
         self.bounds = bounds
-        self.points, self.crs = open_file_pdal(self.path, self.bounds)
+        self.points, self.crs = open_file_pdal(self.path, self.bounds, calculate_height=False)
 
     def estimate_flightpath(self, min_separation:float=2,
                             time_bin_size:float=.5,
@@ -933,8 +934,8 @@ class ALS:
         elif return_type == 'xarray':
             import xarray as xr
             return xr.DataArray(lad,coords={'X':x_centers,'Y':y_centers,'Z':z_centers},dims=['X','Y','Z'],name='LAD')
-        elif return_type == 'voxelmon':
-            grid = Grid()
+        #elif return_type == 'voxelmon':
+        #    grid = Grid()
 
     def execute_default_processing(self,export_folder:str,
                                    plot_name:str,
@@ -956,8 +957,8 @@ class ALS:
         pulses = Pulses.from_point_cloud_array(self.points, origin=self.origin)
 
         if extents is None:
-            min_extents = self.points.select(['X','Y','Z']).min().to_numpy()
-            max_extents = self.points.select(['X', 'Y', 'Z']).max().to_numpy()
+            min_extents = self.points.filter(pl.col('Classification')<7).select(['X','Y','Z']).min().to_numpy()
+            max_extents = self.points.filter(pl.col('Classification')<7).select(['X', 'Y', 'Z']).max().to_numpy()
             extents = np.concatenate([min_extents,max_extents]).flatten()
 
         pulses_thin = pulses.crop(extents)
