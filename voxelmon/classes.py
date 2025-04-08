@@ -146,19 +146,28 @@ class Grid:
         @njit([void(float64[:, :], float64, float64[:], float64[:, :, :], float64[:, :, :], float64[:, :, :])],parallel=True)
         def voxel_traversal(pulses, cellSize, gridExtents, pDirected, pTransmitted, pIntercepted):
             """Trace lidar pulses through grid to count number of pulses directed, transmitted, and intercepted
-            Here, pulses must be a numpy array with columns """
+            Args:
+                pulses (np.ndarray[float64]): 2D array with columns 'BeamOriginX', 'BeamOriginY', 'BeamOriginZ', 'X', 'Y', 'Z',
+                    'BeamDirectionX', 'BeamDirectionY', 'BeamDirectionZ', 'Weight'
+                cellSize (float): cell size in meters
+                gridExtents (np.ndarray[float64]): 1D array with values 'xmin', 'ymin', 'zmin', 'xmax', 'ymax', 'zmax'
+                pDirected (np.ndarray[float64]): 3D output array to store pulses directed at each grid cell
+                pTransmitted (np.ndarray[float64]): 3D output array to store pulses transmitted through each grid cell
+                pIntercepted (np.ndarray[float64]): 3D output array to store pulses intercepted within each grid cell"""
+
+            INF = 1000000000000
 
             for i in prange(pulses.shape[0]):
 
                 # Find which cell the ray ends in
-                cellXEnd = np.uint16((pulses[i, 3] - gridExtents[0]) // cellSize)
-                cellYEnd = np.uint16((pulses[i, 4] - gridExtents[1]) // cellSize)
-                cellZEnd = np.uint16((pulses[i, 5] - gridExtents[2]) // cellSize)
+                cellXEnd = np.uint32((pulses[i, 3] - gridExtents[0]) // cellSize)
+                cellYEnd = np.uint32((pulses[i, 4] - gridExtents[1]) // cellSize)
+                cellZEnd = np.uint32((pulses[i, 5] - gridExtents[2]) // cellSize)
 
                 # Find which cell the ray starts in
-                xstart = pulses[i,0]
-                ystart = pulses[i,1]
-                zstart = pulses[i,2]
+                xstart = pulses[i, 0]
+                ystart = pulses[i, 1]
+                zstart = pulses[i, 2]
 
                 if not ((xstart >= gridExtents[0]) & (ystart >= gridExtents[1]) & (zstart >= gridExtents[2]) &
                         (xstart <= gridExtents[3]) & (ystart <= gridExtents[4]) & (zstart <= gridExtents[5])):
@@ -174,8 +183,8 @@ class Grid:
                         t_min = (gridExtents[0] - xstart) / xdir
                         t_max = (gridExtents[3] - xstart) / xdir
                     else:
-                        t_min = -np.inf
-                        t_max = np.inf
+                        t_min = -INF
+                        t_max = INF
 
                     t1 = min(t_min, t_max)
                     t2 = max(t_min, t_max)
@@ -185,8 +194,8 @@ class Grid:
                         t_min = (gridExtents[1] - ystart) / ydir
                         t_max = (gridExtents[4] - ystart) / ydir
                     else:
-                        t_min = -np.inf
-                        t_max = np.inf
+                        t_min = -INF
+                        t_max = INF
 
                     t1 = max(t1, min(t_min, t_max))  # Update t1 to the maximum lower bound
                     t2 = min(t2, max(t_min, t_max))  # Update t2 to the minimum upper bound
@@ -199,8 +208,8 @@ class Grid:
                         t_min = (gridExtents[2] - zstart) / zdir
                         t_max = (gridExtents[5] - zstart) / zdir
                     else:
-                        t_min = -np.inf
-                        t_max = np.inf
+                        t_min = -INF
+                        t_max = INF
 
                     t1 = max(t1, min(t_min, t_max))  # Update t1 to the maximum lower bound
                     t2 = min(t2, max(t_min, t_max))  # Update t2 to the minimum upper bound
@@ -227,60 +236,56 @@ class Grid:
                 if pulses[i, 6] > 0.0:
                     stepX = 1
                     tDeltaX = cellSize / pulses[i, 6]
-                    tMaxX = ((gridExtents[0] + (cellX+1) * cellSize) - xstart) / pulses[i, 6]  # X position of voxel boundary - current position of ray / distance along x travelled in each timestep
+                    tMaxX = ((gridExtents[0] + (cellX + 1) * cellSize) - xstart) / pulses[i, 6]  # X position of voxel boundary - current position of ray / distance along x travelled in each timestep
                 elif pulses[i, 6] < 0.0:
                     stepX = -1
                     tDeltaX = cellSize / -pulses[i, 6]
-                    tMaxX = ((gridExtents[0] + (cellX) * cellSize) - xstart) / pulses[
-                        i, 6]  # -1 from cellX to calculate distance towards left edge of cell instead of right edge of cell
+                    tMaxX = ((gridExtents[0] + (cellX) * cellSize) - xstart) / pulses[i, 6]  # -1 from cellX to calculate distance towards left edge of cell instead of right edge of cell
                 else:
                     stepX = 0
-                    tDeltaX = gridExtents[3]
-                    tMaxX = gridExtents[3]
+                    tDeltaX = INF
+                    tMaxX = INF
 
                 if pulses[i, 7] > 0.0:
                     stepY = 1
                     tDeltaY = cellSize / pulses[i, 7]
-                    tMaxY = ((gridExtents[1] + (cellY+1) * cellSize) - ystart) / pulses[
-                        i, 7]  # Y position of voxel boundary - current position of ray / distance along y travelled in each timestep
+                    tMaxY = ((gridExtents[1] + (cellY + 1) * cellSize) - ystart) / pulses[i, 7]  # Y position of voxel boundary - current position of ray / distance along y travelled in each timestep
                 elif pulses[i, 7] < 0.0:
                     stepY = -1
                     tDeltaY = cellSize / -pulses[i, 7]
-                    tMaxY = ((gridExtents[1] + (cellY) * cellSize) - ystart) / pulses[
-                        i, 7]  # -1 from cellY to calculate distance towards down edge of cell instead of up edge of cell
+                    tMaxY = ((gridExtents[1] + (cellY) * cellSize) - ystart) / pulses[i, 7]  # -1 from cellY to calculate distance towards down edge of cell instead of up edge of cell
                 else:
                     stepY = 0
-                    tDeltaY = gridExtents[4]
-                    tMaxY = gridExtents[4]
+                    tDeltaY = INF
+                    tMaxY = INF
 
                 if pulses[i, 8] > 0.0:
                     stepZ = 1
                     tDeltaZ = cellSize / pulses[i, 8]
-                    tMaxZ = ((gridExtents[2] + (cellZ+1) * cellSize) - zstart) / pulses[
-                        i, 8]  # Y position of voxel boundary - current position of ray / distance along y travelled in each timestep
+                    tMaxZ = ((gridExtents[2] + (cellZ + 1) * cellSize) - zstart) / pulses[i, 8]  # Y position of voxel boundary - current position of ray / distance along y travelled in each timestep
                 elif pulses[i, 8] < 0.0:
                     stepZ = -1
                     tDeltaZ = cellSize / -pulses[i, 8]
-                    tMaxZ = ((gridExtents[2] + (cellZ) * cellSize) - zstart) / pulses[
-                        i, 8]  # -1 from cellZ to calculate distance towards down edge of cell instead of up edge of cell
+                    tMaxZ = ((gridExtents[2] + (cellZ) * cellSize) - zstart) / pulses[i, 8]  # -1 from cellZ to calculate distance towards down edge of cell instead of up edge of cell
                 else:
                     stepZ = 0
-                    tDeltaZ = gridExtents[5]
-                    tMaxZ = gridExtents[5]
+                    tDeltaZ = INF
+                    tMaxZ = INF
 
                 # Repeat loop until traversing out of the grid along some dimension
                 intercepted = False
-                while (cellX != pDirected.shape[0]) and (cellY != pDirected.shape[1]) and (
-                        cellZ != pDirected.shape[2]) and (cellX != -1) and (cellY != -1) and (cellZ != -1):
+                while (cellX < pDirected.shape[0]) and (cellY < pDirected.shape[1]) and (
+                        cellZ < pDirected.shape[2]) and (cellX >= 0) and (cellY >= 0) and (cellZ >= 0):
                     # Update counters
-                    pDirected[cellX, cellY, cellZ] += pulses[i,9]  # Pulse was directed at this voxel, may or may not have passed through
+                    pDirected[cellX, cellY, cellZ] += pulses[
+                        i, 9]  # Pulse was directed at this voxel, may or may not have passed through
 
                     if (not intercepted) and (cellZ == cellZEnd) and (cellX == cellXEnd) and (cellY == cellYEnd):
-                        pIntercepted[cellX, cellY, cellZ] += pulses[i,9]  # Pulse intercepted within this voxel
+                        pIntercepted[cellX, cellY, cellZ] += pulses[i, 9]  # Pulse intercepted within this voxel
                         intercepted = True
 
                     if not intercepted:
-                        pTransmitted[cellX, cellY, cellZ] += pulses[i,9]  # Pulse passed through this voxel
+                        pTransmitted[cellX, cellY, cellZ] += pulses[i, 9]  # Pulse passed through this voxel
 
                     if (tMaxX < tMaxY) and (tMaxX < tMaxZ):
                         # X-axis traversal.
@@ -295,9 +300,10 @@ class Grid:
                         cellZ += stepZ
                         tMaxZ += tDeltaZ
 
-        voxel_traversal(pulses.array, self.cell_size, self.extents, self.p_directed, self.p_transmitted, self.p_intercepted)
+        voxel_traversal(pulses.array, self.cell_size, self.extents, self.p_directed, self.p_transmitted,
+                        self.p_intercepted)
 
-        meanPathLength = .843*self.cell_size # Correction for unequal path lengths from Grau et al 2017
+        meanPathLength = .843 * self.cell_size  # Correction for unequal path lengths from Grau et al 2017
         self.occlusion = 1 - (self.p_intercepted + self.p_transmitted) / self.p_directed
         self.occlusion[~np.isfinite(self.occlusion)] = 1
         self.pad = -np.log(1 - (self.p_intercepted / (self.p_intercepted + self.p_transmitted))) / (G * meanPathLength)
