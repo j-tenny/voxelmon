@@ -62,7 +62,7 @@ arr, crs = read_pdal(url,tiles[0])
 i = 0
 for tile in tiles:
     als = voxelmon.ALS(url,tile)
-    lad = als.quick_lad(min_height=1.5,bin_size_xy=window_size)
+    lad = als.simple_pad(min_height=1.5, bin_size_xy=window_size)
     lad = lad.filter(pl.col('Z') <= 4)
     lad = lad.with_columns(pl.when(pl.col('LAD')<0).then(None).otherwise('LAD'))
     lad_grid = bin2D(lad,pl.mean('LAD'),window_size )
