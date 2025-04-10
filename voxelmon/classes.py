@@ -907,55 +907,83 @@ class ALS:
 
         arr[:,2] -= min_height
 
-        counts = bin3D(arr,pl.len(),[bin_size_xy,bin_size_xy,bin_size_z],asArray=False)
-        counts = counts.fill_nan(0).fill_null(0)
-        grid_shape = [counts['xBin'].n_unique(),counts['yBin'].n_unique(),counts['zBin'].n_unique()]
-        counts_grid = counts[:, -1].to_numpy().reshape(grid_shape, order='f')
+        if bin_size_xy is not None:
+            # Implement in 3D
+            counts = bin3D(arr,pl.len(),[bin_size_xy,bin_size_xy,bin_size_z],asArray=False)
+            counts = counts.fill_nan(0).fill_null(0)
+            grid_shape = [counts['xBin'].n_unique(),counts['yBin'].n_unique(),counts['zBin'].n_unique()]
+            counts_grid = counts[:, -1].to_numpy().reshape(grid_shape, order='f')
 
-        counts_cs = counts_grid.cumsum(axis=2)
-        pulses_in = counts_cs[:,:,1:]
-        pulses_out = counts_cs[:,:,:-1]
-        lad = -np.log(pulses_out/pulses_in)/(extinction_coefficient*bin_size_z)
-        lad[pulses_in==0] = -1
-        lad[pulses_out==0] = -2
+            counts_cs = counts_grid.cumsum(axis=2)
+            pulses_in = counts_cs[:,:,1:]
+            pulses_out = counts_cs[:,:,:-1]
+            lad = -np.log(pulses_out/pulses_in)/(extinction_coefficient*bin_size_z)
+            lad[pulses_in==0] = np.nan
+            lad[pulses_out==0] = np.nan
 
-        x_centers = counts['xBin'].unique() * bin_size_xy + bin_size_xy / 2
-        y_centers = counts['yBin'].unique() * bin_size_xy + bin_size_xy / 2
-        z_centers = counts['zBin'].unique()[1:] * bin_size_z + bin_size_z / 2 + min_height
+            x_centers = counts['xBin'].unique() * bin_size_xy + bin_size_xy / 2
+            y_centers = counts['yBin'].unique() * bin_size_xy + bin_size_xy / 2
+            z_centers = counts['zBin'].unique()[1:] * bin_size_z + bin_size_z / 2 + min_height
 
-        if return_type == 'numpy':
-            return lad
-        elif return_type == 'polars':
-            z, y, x = np.meshgrid(z_centers,y_centers,x_centers, indexing='ij')
-            return pl.DataFrame({'x':x.flatten(),'y': y.flatten(), 'z':z.flatten(),'pad':lad.flatten('F')})
-        elif return_type == 'xarray':
-            import xarray as xr
-            return xr.DataArray(lad,coords={'x':x_centers,'y':y_centers,'z':z_centers},dims=['x','y','x'],name='pad')
-        elif return_type == 'voxelmon':
-            import xarray as xr
-            if bin_size_xy != bin_size_z:
+            if return_type == 'numpy':
+                return lad
+            elif return_type == 'polars':
+                z, y, x = np.meshgrid(z_centers,y_centers,x_centers, indexing='ij')
+                return pl.DataFrame({'x':x.flatten(),'y': y.flatten(), 'z':z.flatten(),'pad':lad.flatten('F')})
+            elif return_type == 'xarray':
+                import xarray as xr
+                return xr.DataArray(lad,coords={'x':x_centers,'y':y_centers,'z':z_centers},dims=['x','y','x'],name='pad')
+            elif return_type == 'voxelmon':
+                import xarray as xr
+                if bin_size_xy != bin_size_z:
+                    raise ValueError('bin_size_xy must be equal to bin_size_z for voxelmon.Grid')
+                ds = xr.DataArray(lad, coords={'x': x_centers, 'y': y_centers, 'z': z_centers},
+                                  dims=['x', 'y', 'x'], name='pad')
+                cell_size = float(ds.coords['x'][1] - ds.coords['x'][0])
+                extents_min = np.stack([v.values.min() for v in ds.coords.values()]) - cell_size / 2
+                extents_max = np.stack([v.values.max() for v in ds.coords.values()]) + cell_size / 2
+
+                grid = Grid(extents=np.concatenate([extents_min, extents_max]), cell_size=cell_size)
+
+
+                grid.p_transmitted = pulses_out
+                grid.p_intercepted = counts_grid
+                grid.p_directed = np.zeros_like(grid.p_intercepted)
+                grid.occlusion = np.zeros_like(grid.p_intercepted)
+                grid.classify_foliage_with_PAD(max_occlusion=999,min_pad_foliage=0,max_pad_foliage=999)
+
+                grid.hag = bin3D(arr,pl.mean('z'),[bin_size_xy,bin_size_xy,bin_size_z],asArray=True)
+
+                grid.dem = np.zeros_like(grid.p_intercepted)
+
+                return grid
+        else:
+            # Implement in 1D
+            points_df = pl.DataFrame({'z':arr[:,2]})
+            points_df = points_df.with_columns(pl.col('z').floordiv(bin_size_z).cast(pl.Int32).alias('zBin'))
+            counts = points_df.group_by('zBin').agg(pl.count())
+            all_bins = pl.DataFrame({'zBin':np.arange(points_df['zBin'].min(), points_df['zBin'].max())})
+            counts = all_bins.join(counts, 'zBin', 'left').sort('zBin')
+            counts = counts.fill_nan(0).fill_null(0).to_numpy()
+
+            counts_cs = counts[:,1].cumsum()
+            pulses_in = counts_cs[1:]
+            pulses_out = counts_cs[:-1]
+            lad = -np.log(pulses_out / pulses_in) / (extinction_coefficient * bin_size_z)
+            lad[pulses_in == 0] = np.nan
+            lad[pulses_out == 0] = np.nan
+
+            if return_type == 'numpy':
+                return lad
+            elif return_type == 'polars':
+                return pl.DataFrame({'x': self.points['X'].mean(),
+                                     'y': self.points['Y'].mean(),
+                                     'z': counts[1:,0] * bin_size_z + bin_size_z / 2 + min_height,
+                                     'pad': lad})
+            elif return_type == 'xarray':
+                raise NotImplementedError('xarray return type not implemented for 1D')
+            elif return_type == 'voxelmon':
                 raise ValueError('bin_size_xy must be equal to bin_size_z for voxelmon.Grid')
-            ds = xr.DataArray(lad, coords={'x': x_centers, 'y': y_centers, 'z': z_centers},
-                              dims=['x', 'y', 'x'], name='pad')
-            cell_size = float(ds.coords['x'][1] - ds.coords['x'][0])
-            extents_min = np.stack([v.values.min() for v in ds.coords.values()]) - cell_size / 2
-            extents_max = np.stack([v.values.max() for v in ds.coords.values()]) + cell_size / 2
-
-            grid = Grid(extents=np.concatenate([extents_min, extents_max]), cell_size=cell_size)
-
-
-            grid.p_transmitted = pulses_out
-            grid.p_intercepted = counts_grid
-            grid.p_directed = np.zeros_like(grid.p_intercepted)
-            grid.occlusion = np.zeros_like(grid.p_intercepted)
-            grid.classify_foliage_with_PAD(max_occlusion=999,min_pad_foliage=0,max_pad_foliage=999)
-
-            grid.hag = bin3D(arr,pl.mean('z'),[bin_size_xy,bin_size_xy,bin_size_z],asArray=True)
-
-            grid.dem = np.zeros_like(grid.p_intercepted)
-
-            return grid
-
 
     def execute_default_processing(self,export_folder:str,
                                    plot_name:str,
