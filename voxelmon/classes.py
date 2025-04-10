@@ -567,9 +567,9 @@ class Grid:
         df = polars.DataFrame({'x': self.centers[:, 0], 'y': self.centers[:, 1], 'z': self.centers[:, 2], 'hag':self.hag.flatten('F'),
                                 'pDirected': self.p_directed.flatten('F'), 'pTransmitted': self.p_transmitted.flatten('F'),
                                 'pIntercepted': self.p_intercepted.flatten('F'), 'occlusion': self.occlusion.flatten('F'),
-                                'pad': self.pad.flatten('F'), 'linearity': self.geometric_features[:, 0],
-                                'planarity': self.geometric_features[:, 1], 'eigenentropy': self.geometric_features[:, 2],
-                                'verticality': self.geometric_features[:, 3], 'classification':self.classification.flatten('F')})
+                                'pad': self.pad.flatten('F'), #'linearity': self.geometric_features[:, 0],
+                                #'planarity': self.geometric_features[:, 1], 'eigenentropy': self.geometric_features[:, 2],'verticality': self.geometric_features[:, 3],
+                                'classification':self.classification.flatten('F')})
         return df
 
 
@@ -768,7 +768,7 @@ class ALS:
         from voxelmon.utils import open_file_pdal
         self.path = filepath
         self.bounds = bounds
-        self.points, self.crs = open_file_pdal(self.path, self.bounds, calculate_height=False)
+        self.points, self.crs = open_file_pdal(self.path, self.bounds, calculate_height=calculate_height)
 
     def estimate_flightpath(self, min_separation:float=2,
                             time_bin_size:float=.5,
@@ -890,28 +890,19 @@ class ALS:
         self.origin = interpolate_flightpath(self.points,flightpath)
         return flightpath
 
-    def quick_lad(self,bin_size_xy = 10, bin_size_z = 2, min_height = 1, extinction_coefficient=.5, return_type='polars'):
-        """Estimate leaf area density with assumption that pulses were directed straight down
+    def simple_pad(self, bin_size_xy = 10, bin_size_z = 2, min_height = 1, extinction_coefficient=.5, return_type='polars'):
+        """Estimate plant area density with assumption that pulses were directed straight down.
 
-        return_type must be one of 'numpy', 'polars', or 'xarray'"""
+        Requires calculate_height=True when initializing ALS()
+
+        return_type must be one of 'numpy', 'polars', 'xarray', or 'voxelmon'"""
+
         import pdal
         import numpy as np
         from voxelmon.utils import bin3D
         import polars as pl
-        count = 10
-        result = 0
-        while result == 0 and count <100:
-            try:
-                if self.bounds is not None:
-                    pipeline = pdal.Pipeline([pdal.Reader(self.path,bounds=self.bounds),pdal.Filter.hag_delaunay(count=count)])
-                else:
-                    pipeline = pdal.Pipeline([pdal.Reader(self.path), pdal.Filter.hag_delaunay(count=count)])
-                result = pipeline.execute()
-            except:
-                count*=2
 
-        arr = pipeline.arrays[0]
-        arr = np.column_stack((arr['X'],arr['Y'],arr['HeightAboveGround']))
+        arr = self.points.select(['X','Y','HeightAboveGround']).to_numpy()
         arr[arr[:,2]<0,2] = 0 # Assign negative heights to 0
 
         arr[:,2] -= min_height
@@ -936,12 +927,35 @@ class ALS:
             return lad
         elif return_type == 'polars':
             z, y, x = np.meshgrid(z_centers,y_centers,x_centers, indexing='ij')
-            return pl.DataFrame({'X':x.flatten(),'Y': y.flatten(), 'Z':z.flatten(),'LAD':lad.flatten('F')})
+            return pl.DataFrame({'x':x.flatten(),'y': y.flatten(), 'z':z.flatten(),'pad':lad.flatten('F')})
         elif return_type == 'xarray':
             import xarray as xr
-            return xr.DataArray(lad,coords={'X':x_centers,'Y':y_centers,'Z':z_centers},dims=['X','Y','Z'],name='LAD')
-        #elif return_type == 'voxelmon':
-        #    grid = Grid()
+            return xr.DataArray(lad,coords={'x':x_centers,'y':y_centers,'z':z_centers},dims=['x','y','x'],name='pad')
+        elif return_type == 'voxelmon':
+            import xarray as xr
+            if bin_size_xy != bin_size_z:
+                raise ValueError('bin_size_xy must be equal to bin_size_z for voxelmon.Grid')
+            ds = xr.DataArray(lad, coords={'x': x_centers, 'y': y_centers, 'z': z_centers},
+                              dims=['x', 'y', 'x'], name='pad')
+            cell_size = float(ds.coords['x'][1] - ds.coords['x'][0])
+            extents_min = np.stack([v.values.min() for v in ds.coords.values()]) - cell_size / 2
+            extents_max = np.stack([v.values.max() for v in ds.coords.values()]) + cell_size / 2
+
+            grid = Grid(extents=np.concatenate([extents_min, extents_max]), cell_size=cell_size)
+
+
+            grid.p_transmitted = pulses_out
+            grid.p_intercepted = counts_grid
+            grid.p_directed = np.zeros_like(grid.p_intercepted)
+            grid.occlusion = np.zeros_like(grid.p_intercepted)
+            grid.classify_foliage_with_PAD(max_occlusion=999,min_pad_foliage=0,max_pad_foliage=999)
+
+            grid.hag = bin3D(arr,pl.mean('z'),[bin_size_xy,bin_size_xy,bin_size_z],asArray=True)
+
+            grid.dem = np.zeros_like(grid.p_intercepted)
+
+            return grid
+
 
     def execute_default_processing(self,export_folder:str,
                                    plot_name:str,

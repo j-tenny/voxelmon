@@ -524,3 +524,117 @@ def _default_postprocessing(grid, plot_name,
         summary.to_csv(os.path.join(export_folder, 'Plot_Summary/', plot_name) + '.csv', index=False)
     profile = profile.to_pandas()
     return profile,summary
+
+def estimate_foliage_from_treelist(treelist:pd.DataFrame, lma_ref_spcd=None, lma_ref_spgrpcd=None,
+                                   division="", input_metric=True, output_metric=True):
+    """Make canopy bulk density profile based on tree list and allometric equations from NSVB.
+
+    Input treelist must be in FIA format. lma_ref must have column LMA with units kg/m^2.
+
+    For metric units:
+        DIA: cm
+        HT: m
+        TPA_UNADJ: trees per hectare
+        DRYBIO_FOLIAGE: kg
+        LEAF_AREA: m^2
+
+    Units in other columns are not considered"""
+
+    from nsvb import estimators
+
+    if input_metric:
+        treelist['DIA'] /= 2.54
+        treelist['HT'] *= 3.2808
+        treelist['TPA_UNADJ'] *= 2.471
+
+    treelist['DRYBIO_FOLIAGE'] = 0.
+    for i in treelist.index:
+        treelist.loc[i,'DRYBIO_FOLIAGE'] = estimators.total_foliage_dry_weight(treelist.loc[i,'SPCD'],
+                                                                               treelist.loc[i,'DIA'],
+                                                                               treelist.loc[i,'HT'],
+                                                                               division)
+    if lma_ref_spcd is not None:
+        if 'SPCD_OG' in treelist.columns:
+            treelist = treelist.merge(lma_ref_spcd[['SPCD', 'LMA']], left_on='SPCD_OG',right_on='SPCD',suffixes=['','_y'], how='left')
+        else:
+            treelist = treelist.merge(lma_ref_spcd[['SPCD','LMA']], on='SPCD', how='left')
+        treelist['LMA_SPCD'] = treelist['LMA']
+        if lma_ref_spgrpcd is not None:
+            treelist = treelist.drop(columns='LMA')
+
+    if lma_ref_spgrpcd is not None:
+        treelist = treelist.merge(lma_ref_spgrpcd[['SPGRPCD','LMA']], on='SPGRPCD', how='left')
+        treelist['LMA_SPGRPCD'] = treelist['LMA']
+        if lma_ref_spcd is not None:
+            treelist['LMA'] = treelist['LMA_SPCD']
+            treelist.loc[treelist['LMA'].isna(),'LMA'] = treelist.loc[treelist['LMA'].isna(),'LMA_SPGRPCD']
+
+    # Convert lb to kg for leaf area calculation
+    treelist['DRYBIO_FOLIAGE'] /= 2.2046
+
+    # Calculate leaf area
+    if 'LMA' in treelist.columns:
+        treelist['LEAF_AREA'] = treelist['DRYBIO_FOLIAGE'] / treelist['LMA']
+        # Convert metric to sq feet
+        if not output_metric:
+            treelist['LEAF_AREA'] *= 10.7639
+
+    # Convert in,ft,tpa to cm,m,tpha
+    if output_metric:
+        treelist['DIA'] *= 2.54
+        treelist['HT'] /= 3.2808
+        treelist['TPA_UNADJ'] /= 2.471
+
+    # Convert kg to lb
+    if not output_metric:
+        treelist['DRYBIO_FOLIAGE'] *= 2.2046
+
+    return treelist
+
+
+def profiles_from_treelist(treelist:pd.DataFrame,
+                           ht_interval:float=0.2,
+                           area_factor:float=10000,
+                           by_species:bool=True):
+    """Make canopy bulk density and/or leaf area density profiles from treelist.
+
+    Treelist must be in FIA format. This process is units-agnostic except for area factor, which represents area2/area1
+    where input units are trees/area1 and output units are kg/(ht_unit*area2). For input trees/ha and output kg/m^3, area
+    factor is 10000 m^2/ha."""
+
+    tree_bins = []
+    for i in treelist.index:
+        ht = treelist.loc[i,'HT']
+        cr = treelist.loc[i,'CR']
+        if np.isnan(ht) or np.isnan(cr):
+            raise ValueError('HT and CR must not be nan')
+
+        max_ht_bin = int(round(ht / ht_interval))
+        min_ht_bin = int(round((ht * (1 - cr / 100)) / ht_interval))
+        bins = np.arange(min_ht_bin,max_ht_bin+1)
+        df = pd.DataFrame({'PLT_CN':treelist.loc[i,'PLT_CN'],'HT_BIN':bins, 'HT': bins*ht_interval,
+                           'SPCD':treelist.loc[i,'SPCD']})
+        if 'DRYBIO_FOLIAGE' in treelist.columns:
+            df['CBD']=treelist.loc[i,'DRYBIO_FOLIAGE'] * treelist.loc[i,'TPA_UNADJ'] / area_factor / len(bins)
+        if 'LEAF_AREA' in treelist.columns:
+            df['LAD']=treelist.loc[i,'LEAF_AREA'] * treelist.loc[i,'TPA_UNADJ'] / area_factor / len(bins)
+        if 'LMA' in treelist.columns:
+            df['LMA']=treelist.loc[i,'LMA']
+        tree_bins.append(df)
+    tree_bins = pd.concat(tree_bins)
+
+    if by_species:
+        profiles = tree_bins.pivot_table(index=['PLT_CN', 'HT_BIN', 'SPCD'],
+                                         aggfunc={'CBD':'sum', 'LAD':'sum', 'LMA':'mean'}).reset_index()
+    else:
+        tree_bins = tree_bins.drop(columns='SPCD')
+        tree_bins['LMAxCBD'] = tree_bins['LMA'] * tree_bins['CBD']
+        profiles = tree_bins.pivot_table(index=['PLT_CN', 'HT_BIN'],
+                                         aggfunc={'CBD': 'sum', 'LAD': 'sum', 'LMAxCBD': 'sum'}).reset_index()
+        profiles['LMA'] = profiles['LMAxCBD'] / profiles['CBD']
+        profiles = profiles.drop(columns='LMAxCBD')
+
+    profiles.insert(2, 'HT', profiles['HT_BIN'] * ht_interval)
+    return profiles
+
+
