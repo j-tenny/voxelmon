@@ -7,8 +7,9 @@ treatment effect monitoring, hydrology analysis, wildlife habitat suitability, a
 
 ## Usage
 This code will process a single TLS scan in .ptx format and create files within the export folder including a 3D grid 
-with leaf area density estimates, a vertical profile of leaf area density, and plot summary metrics. The 3D grid is 
-represented with a row for each grid cell with columns for x, y, z coordinates, leaf (plant) area density, occlusion, etc.
+with leaf area density estimates, a vertical profile of leaf area density, and plot summary metrics. The export 3D grid is
+formatted as .csv file with a row for each grid cell and columns for x, y, z coordinates, leaf (plant) area density, occlusion, etc.
+This allows the file to be opened in CloudCompare.
 
 For more detailed examples, see the example_scripts folder.
 
