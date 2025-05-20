@@ -253,17 +253,20 @@ def summarize_profiles(profiles, bin_height=.1, min_height=1., fsg_threshold=.01
 
     profiles_filter_h = profiles[profiles[height_col]>=min_height]
     summary = profiles_filter_h.pivot_table(index=plot_id_col,
-                                            aggfunc={cbd_col: ['sum', 'max'], pad_col: 'sum', occlusion_col: 'mean'}
+                                            aggfunc={cbd_col: 'sum', pad_col: 'sum', occlusion_col: 'mean'}
                                             ).reset_index()
 
-    summary.columns = [plot_id_col,'cbd_max','cfl','occlusion','plant_area']
+    summary.columns = [plot_id_col,'cfl','occlusion','plant_area']
     summary['cfl'] *= bin_height
     summary['plant_area'] *= bin_height
     summary['fsg'] = 0.
-    summary['fsg_h1'] = min_height
-    summary['fsg_h2'] = min_height
+    summary['fsg_h1'] = float(min_height)
+    summary['fsg_h2'] = float(min_height)
+    summary['canopy_height'] = 0.
+    summary['canopy_ratio'] = 0.
+    summary.insert(1,'cbd_max',0.)
 
-    # Estimate fuel strata gap. Tolerate noise in profile by looking for a block of bins below the fsg threshold.
+    # Estimate cbd and fuel strata gap. Tolerate noise in profile by looking for a block of bins below the fsg threshold.
     min_contiguous_empty = .5 # Meters
     min_contiguous_filled = .5 # Meters
     #noise_bumps_allowed = 2 # Number of noisy bins
@@ -275,6 +278,7 @@ def summarize_profiles(profiles, bin_height=.1, min_height=1., fsg_threshold=.01
         profile = profile[[height_col,cbd_col]].to_numpy()
         #profile[np.isnan(profile[:,1]),1] = 0
 
+        # Calculate FSG
         fsg_h1 = min_height
         fsg_h2 = min_height
         fsg_h1_temp = min_height
@@ -342,6 +346,18 @@ def summarize_profiles(profiles, bin_height=.1, min_height=1., fsg_threshold=.01
         summary.loc[summary[plot_id_col] == plot_id, 'fsg_h2'] = fsg_h2
         summary.loc[summary[plot_id_col] == plot_id, 'fsg'] = fsg_h2 - fsg_h1
 
+        # Calculate effective canopy bulk density
+        cbd_window_size_bins = int(3.96 / bin_height) # 3.96m is the 13-foot running mean used in FVS-FFE
+        cbd = profile[:,1]
+        cbd_max = float(smooth_w_running_avg(cbd, cbd_window_size_bins).max())
+        summary.loc[summary[plot_id_col] == plot_id, 'cbd_max'] = cbd_max
+
+        # Calculate canopy height and ratio
+        ch = profile[profile[:, 1] > 0][:, 0].max()  # Max height where val>0
+        cr = (ch - fsg_h2) / ch
+        summary.loc[summary[plot_id_col] == plot_id, 'canopy_height'] = ch
+        summary.loc[summary[plot_id_col] == plot_id, 'canopy_ratio'] = cr
+
     return summary
 
 
@@ -388,6 +404,7 @@ def smooth_w_running_avg(values,window_size=40):
     from numba import njit,float64,int32,prange
 
     values = np.array(values,dtype=np.float64)
+    values = np.pad(values, window_size, 'constant', constant_values=0)
     window_size = np.int32(window_size)
 
     @njit(float64[:](float64[:], int32), parallel=True)
@@ -403,7 +420,9 @@ def smooth_w_running_avg(values,window_size=40):
 
         return result
 
-    return running_average(values, window_size)
+    values_smooth = running_average(values, window_size)
+    values_smooth = values_smooth[window_size:-window_size]
+    return values_smooth
 
 def smooth_w_spline(values,sigma=.01):
     import numpy as np

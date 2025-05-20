@@ -39,6 +39,9 @@ max_occlusion = .75 # Voxels with occulsion greater than this threshold are cons
 cell_size = .1 # Side-length of voxels
 min_height = 1 # Minimum height considered in CBD profiles
 
+wind_speed = 30 # Wind speed used in fire behavior modeling, km/hr
+wind_direction = 270
+
 # RUN ##########################################################
 # Initialize canopy model from csv
 canopy_model = BulkDensityProfileModel.from_csv(canopy_model_path)
@@ -98,14 +101,38 @@ summary['LOAD_TOTAL'] = summary['LOAD_FDF']+summary['LOAD_10HR']+summary['LOAD_1
 behave_results = []
 for plotname in summary.index:
     fm = pyrothermel.FuelModel.from_existing(summary.loc[plotname,'SURFACE_CLASS'])
-    fm.fuel_bed_depth = summary.loc[plotname,'FUELBED_HT']/100
-    fm.fuel_load_one_hour = summary.loc[plotname,'LOAD_FDF']
-    fm.fuel_load_ten_hour = summary.loc[plotname,'LOAD_10HR']
-    fm.fuel_load_hundred_hour = summary.loc[plotname, 'LOAD_100HR']
-    fm.fuel_load_live_herbaceous = summary.loc[plotname, 'LOAD_LH']
-    fm.fuel_load_live_woody = summary.loc[plotname, 'LOAD_LW']
+    bd = fm.bulk_density
+    load_1hr = summary.loc[plotname,'LOAD_FDF']
+    if np.isfinite(load_1hr):
+        fm.fuel_load_one_hour = load_1hr
+    load_10hr = summary.loc[plotname,'LOAD_10HR']
+    if np.isfinite(load_10hr):
+        fm.fuel_load_ten_hour = load_10hr
+    load_100hr = summary.loc[plotname,'LOAD_100HR']
+    if np.isfinite(load_100hr):
+        fm.fuel_load_hundred_hour = load_100hr
+    load_lh = summary.loc[plotname,'LOAD_LH']
+    if np.isfinite(load_lh):
+        fm.fuel_load_live_herbaceous = load_lh
+    load_lw = summary.loc[plotname,'LOAD_LW']
+    if np.isfinite(load_lw):
+        fm.fuel_load_live_woody = load_lw
+    depth = summary.loc[plotname, 'FUELBED_HT'] / 100
+    if np.isfinite(depth):
+        fm.fuel_bed_depth = depth
+    else:
+        fm.bulk_density = bd
+
     ms = pyrothermel.MoistureScenario.from_existing(1,2)
-    run = pyrothermel.PyrothermelRun(fm,ms,40,canopy_base_height=summary.loc[plotname,'fsg'],canopy_bulk_density=summary.loc[plotname,'cbd_max'])
+    up = pyrothermel.UnitsPreset.metric()
+    run = pyrothermel.PyrothermelRun(fm,ms,wind_speed,units_preset=up,wind_input_mode='twenty_foot',
+                                     canopy_base_height=summary.loc[plotname,'fsg'],
+                                     canopy_bulk_density=summary.loc[plotname,'cbd_max'],
+                                     canopy_cover=summary.loc[plotname,'canopy_cover'],
+                                     canopy_height=summary.loc[plotname,'canopy_height'],
+                                     canopy_ratio=summary.loc[plotname,'canopy_ratio'],
+                                     slope=summary.loc[plotname,'terrain_slope'],
+                                     aspect=summary.loc[plotname,'terrain_aspect'])
     run.run_surface_fire_in_direction_of_max_spread()
     result = run.run_crown_fire_scott_and_reinhardt()
     result['torching_index'] = run.calculate_torching_index(max_wind_speed=1000)
@@ -152,7 +179,7 @@ if generate_figures:
                       ['kg/m^3','m','kg/m^2','cm','km/hr','kW/m','m','km/hr','km/hr']]
         table_data = np.array(table_data).T
         ax2.table(cellText=table_data, colLabels=['Name', 'Value','Units'], cellLoc='center', bbox=[1.1, 0, .75, 1],colWidths=[.5,.25,.25])
-        ax2.text(1.1, -.1, "Potential fire behavior based on \n40km/hr wind; 'very low' moisture", transform=ax2.transAxes, fontsize=8, ha='left')
+        ax2.text(1.1, -.1, f"Potential fire behavior based on \n{wind_speed}km/hr wind; 'very low' moisture", transform=ax2.transAxes, fontsize=8, ha='left')
         f.tight_layout(pad=2)
         plt.savefig(export_folder.joinpath(plotname + '.png'), dpi=300)
         plt.show()

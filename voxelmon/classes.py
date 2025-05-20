@@ -1294,14 +1294,16 @@ class TLS_PTX:
 
         """
         from voxelmon.utils import _default_postprocessing,_default_folder_setup
+        from pathlib import Path
 
-        _default_folder_setup(export_dir)
+        _default_folder_setup(export_dir,points_dir=True)
 
         pulses = Pulses.from_point_cloud_array(self.xyz, self.origin)
 
         maxExtents = [-plot_radius - plot_radius_buffer, -plot_radius - plot_radius_buffer, -plot_radius, plot_radius + plot_radius_buffer, plot_radius + plot_radius_buffer, max_height]
 
         pulses_thin = pulses.crop(maxExtents)
+
         minHeight = pulses_thin.xyz[:, 2].min()
         max_height = pulses_thin.xyz[:, 2].max() + 1
         gridExtents = maxExtents.copy()
@@ -1315,6 +1317,7 @@ class TLS_PTX:
         grid.calculate_pulse_metrics(pulses)
 
         profile, summary = _default_postprocessing(grid=grid, plot_name=plot_name, export_folder=export_dir, plot_radius=plot_radius, max_occlusion=max_occlusion, sigma1=sigma1, min_pad_foliage=min_pad_foliage, max_pad_foliage=max_pad_foliage)
+        pulses_thin.to_csv(Path(export_dir) / 'Points' / (plot_name + '.csv'))
 
         return grid, profile, summary
 
@@ -1788,14 +1791,42 @@ class BulkDensityProfileModelFitter:
         return models
 
 
-
-    def to_file(self, filepath):
+    def to_files(self, export_dir):
         """
-        Save all model information to a binary file.
+        Save species composition and calibrated LMA values to csv files.
         """
+        import csv
+        from pathlib import Path
 
-        import pickle
-        with open(filepath, 'wb') as f:
-            pickle.dump(self, f)
+        if self.mass_ratio_dict is None:
+            raise ValueError('Mass ratio dictionary is None. Use fit_mass_ratio_bayesian()')
+        if self.species_profiles is None:
+            raise ValueError('Species profiles dictionary is None. Use summarize_species_profiles()')
 
+        for class_id in self.species_profiles.keys():
+            # Get intercept and lma values for first row of output csv
+            model_params = [self.mass_ratio_dict[sp] for sp in self.species_cols]
+            model_params.insert(0, self.intercept)
+
+            # Get column labels for second row of output csv
+            output_cols = [self.height_col] + list(self.species_cols)
+
+            # Format data for remainder of output csv
+            df = self.species_profiles[class_id]
+            df = df[output_cols]
+            output_data = df.to_numpy().tolist()
+
+            # Insert headers
+            output_data.insert(0,output_cols)
+
+            # Insert intercept and lma values
+            output_data.insert(0,model_params)
+
+            output_path = Path(export_dir) / f'{class_id}.csv'
+
+            with output_path.open('w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerows(output_data)
+
+            print(f'Saved {class_id}.csv to {export_dir}')
 

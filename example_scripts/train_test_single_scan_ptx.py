@@ -12,6 +12,8 @@ import seaborn as sns
 import math
 import statsmodels.formula.api as smf
 from multiprocessing import Process, freeze_support, set_start_method
+
+import voxelmon
 from voxelmon import TLS_PTX, BulkDensityProfileModelFitter, get_files_list, directory_to_pandas, plot_side_view, calculate_species_proportions, smooth
 
 ########################################################################################################################
@@ -26,11 +28,11 @@ def main():
 
     input_folder = '../TontoNF/TLS/PTX/AllScans/' # Folder containing scans in .PTX format
     keyword = 'Med Density 1' # Keyword used to filter selected scans from other files. Just want the center scan here.
-    export_folder = 'D:/DataWork/pypadResults/' # Root folder for results
+    export_folder = 'D:/DataWork/TontoFinalResultsSingle/' # Root folder for results
     biomass = pd.read_csv('C:\\Users\\john1\\OneDrive - Northern Arizona University\\Work\\TontoNF\\AZ_CanProf_Output.csv') # Conventional estimates of canopy bulk density by species group by height bin by plot. Produced by BuildCanopyProfile.R
     biomass_classes = list(biomass.columns[2:-1]) # Names of the species groups used in biomass estimates
     surface_biomass = pd.read_csv('C:\\Users\\john1\\OneDrive - Northern Arizona University\\Work\\TontoNF\\SubplotBiomassEstimates.csv') # Estimated surface fuels by fuel component by subplot by plot
-    profile_smoothing_factor = .005 # Value used as input to voxelmon.utils.smooth() when smoothing profiles
+    profile_smoothing_factor = 0 # Value used as input to voxelmon.utils.smooth() when smoothing profiles
     feature = 'pad' # Can be 'pad' to train model with plant area density or 'foliage' to train model with foliage volume
     prior_mean = np.array([0.141,0.28,0.141,0.49,.333])
     prior_std = prior_mean*.05
@@ -43,7 +45,6 @@ def main():
     leave_one_out = False # True: Use leave-one-out cross validation. False: Use k-fold cross validation
     nfolds = 10 # Number of folds used in k-fold cross validation. Set to 1 to train with all data (can't test).
     bootstrap_confidence_intervals = False
-    generate_test_figure = False # Show figure from individual random plot.
     generate_figures = True # Generate figures for all plots
     variance_stats = True # Generate stats for effects of terrain, occlusion, height
 
@@ -317,6 +318,7 @@ def main():
             model_fitter.fit_mass_ratio_bayesian(prior_mean, prior_std, sigma_residuals, sigma_intercept, fit_intercept,
                                                  two_stage_fit)
             model = model_fitter.to_models()[veg_type]
+            model_fitter.to_files(export_folder)
             model.to_file(veg_type+'.model')
             print(f'Effective Leaf Area Density {veg_type} Model:')
             print(model_fitter.mass_ratio_dict)
@@ -358,6 +360,7 @@ def main():
                                                      profile_smoothing_factor, 1)
         model_fitter.fit_mass_ratio_bayesian(prior_mean, prior_std, sigma_residuals, sigma_intercept, fit_intercept,
                                              two_stage_fit)
+        model_fitter.to_files(export_folder)
         models = model_fitter.to_models()
         for veg_type in models:
             models[veg_type].to_file(veg_type+'.model')
@@ -380,67 +383,66 @@ def main():
         results.loc[plot_filter,:].to_csv(export_folder + '\\' + 'Final_Profile' + '\\' + plot + '.csv')
 
     # Aggregate canopy bulk density along profile
-    results_plot = results.pivot_table(index='plot_id', aggfunc={'biomass': ['mean', 'max', 'sum'],
-                                                                 'biomassPred': ['mean', 'max', 'sum'],
-                                                                 'occluded': 'mean'}).reset_index()
+    summary_conv = voxelmon.summarize_profiles(results,cell_size,min_height=1,cbd_col='biomass',height_col='height',
+                                               pad_col='pad',occlusion_col='occluded',plot_id_col='plot_id')
+    summary_pred = voxelmon.summarize_profiles(results,cell_size, min_height=1, cbd_col='biomassPred', height_col='height',
+                                               pad_col='pad', occlusion_col='occluded', plot_id_col='plot_id')
 
-    # Calculate total canopy fuel load (integral of vertical profile)
-    results_plot['biomass', 'sum'] *= cell_size
-    results_plot['biomassPred', 'sum'] *= cell_size
+    results_plot = summary_conv.merge(summary_pred,on='plot_id',suffixes=('','_pred'))
 
     results_plot['veg_type'] = [get_class(string) for string in results_plot['plot_id']]
 
     # Print accuracy results
 
     print("Canopy fuel load (all veg types)")
-    score_cfl = score(results_plot['biomass', 'sum'], results_plot['biomassPred', 'sum'], refit=True)
+    score_cfl = score(results_plot['cfl'], results_plot['cfl_pred'], refit=True)
 
     print("Max CBD (all veg types)")
-    score_cbd = score(results_plot['biomass', 'max'], results_plot['biomassPred', 'max'], refit=True)
+    score_cbd = score(results_plot['cbd_max'], results_plot['cbd_max_pred'], refit=True)
 
 
     print("Canopy fuel load (CHAP only)")
     results_plot_filter = results_plot[results_plot['veg_type']=='CHAP']
-    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'], refit=True)
+    score(results_plot_filter['cfl'], results_plot_filter['cfl_pred'], refit=True)
     print("Max CBD (CHAP only)")
-    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'], refit=True)
+    score(results_plot_filter['cbd_max'], results_plot_filter['cbd_max_pred'], refit=True)
 
     print("Canopy fuel load (PJO only)")
     results_plot_filter = results_plot[results_plot['veg_type']=='PJO']
-    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'], refit=True)
+    score(results_plot_filter['cfl'], results_plot_filter['cfl_pred'], refit=True)
     print("Max CBD (PJO only)")
-    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'], refit=True)
+    score(results_plot_filter['cbd_max'], results_plot_filter['cbd_max_pred'], refit=True)
 
     print("Canopy fuel load (PPO only)")
     results_plot_filter = results_plot[results_plot['veg_type']=='PPO']
-    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'], refit=True)
+    score(results_plot_filter['cfl'], results_plot_filter['cfl_pred'], refit=True)
     print("Max CBD (PPO only)")
-    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'], refit=True)
+    score(results_plot_filter['cbd_max'], results_plot_filter['cbd_max_pred'], refit=True)
 
     print("Canopy fuel load (CHAP + PJO only)")
     results_plot_filter = results_plot[results_plot['veg_type']!='PPO']
-    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'], refit=True)
+    score(results_plot_filter['cfl'], results_plot_filter['cfl_pred'], refit=True)
     print("Max CBD (CHAP + PJO only)")
-    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'], refit=True)
+    score(results_plot_filter['cbd_max'], results_plot_filter['cbd_max_pred'], refit=True)
 
     print("Canopy fuel load (CHAP + PPO only)")
     results_plot_filter = results_plot[results_plot['veg_type']!='PJO']
-    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'], refit=True)
+    score(results_plot_filter['cfl'], results_plot_filter['cfl_pred'], refit=True)
     print("Max CBD (CHAP + PPO only)")
-    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'], refit=True)
+    score(results_plot_filter['cbd_max'], results_plot_filter['cbd_max_pred'], refit=True)
 
     print("Canopy fuel load (PJO + PPO only)")
     results_plot_filter = results_plot[results_plot['veg_type']!='CHAP']
-    score(results_plot_filter['biomass', 'sum'], results_plot_filter['biomassPred', 'sum'], refit=True)
+    score(results_plot_filter['cfl'], results_plot_filter['cfl_pred'], refit=True)
     print("Max CBD (PJO + PPO only)")
-    score(results_plot_filter['biomass', 'max'], results_plot_filter['biomassPred', 'max'], refit=True)
+    score(results_plot_filter['cbd_max'], results_plot_filter['cbd_max_pred'], refit=True)
 
 
     # Produce regression accuracy plots for total canopy fuel load and max canopy bulk density
     f, [ax1, ax2] = plt.subplots(ncols=2, constrained_layout=True, figsize=[7, 4])
-    sns.scatterplot(x=results_plot['biomass', 'sum'], y=results_plot['biomassPred', 'sum'],
+    sns.scatterplot(x=results_plot['cfl'], y=results_plot['cfl_pred'],
                     hue=results_plot['veg_type'], palette=['orange', 'green', 'blue'], ax=ax1)
-    sns.scatterplot(x=results_plot['biomass', 'max'], y=results_plot['biomassPred', 'max'],
+    sns.scatterplot(x=results_plot['cbd_max'], y=results_plot['cbd_max_pred'],
                     hue=results_plot['veg_type'], palette=['orange', 'green', 'blue'], ax=ax2)
     ax1.axline([0, 0], slope=1)
     ax2.axline([0, 0], slope=1)
@@ -520,28 +522,6 @@ def main():
             print(results_summary)
 
     #%%#####################################################################################################################
-    if generate_test_figure:
-        import polars as pl
-
-        plotname = 'T1423071101'
-        summary_filepath = [Path(filename) for filename in tls_summary_files if plotname in filename][0]
-        basename = summary_filepath.name
-        dempath = Path('/'.join(list(summary_filepath.parts[:-2]) + ['DEM', basename]))
-        pointspath = Path('/'.join(list(summary_filepath.parts[:-2]) + ['Points', basename]))
-        pts = pl.read_csv(pointspath)
-        dem_pts = pl.read_csv(dempath)
-        results_filter = results[(results['plot_id'] == plotname) & (results['height'] > 0)]
-        f, [ax1, ax2] = plt.subplots(ncols=2, sharey=True, width_ratios=[2.5, 1], figsize=[8, 4])
-        [arr, arr_extents] = plot_side_view(pts, direction=0, demPtsNormalize=dem_pts, returnData=True)
-        ax1.imshow(arr, extent=arr_extents, aspect=2)
-        ax2.plot(results_filter['biomass'], results_filter['height'], label='Conventional Estimate')
-        ax2.plot(results_filter['biomassPred'], results_filter['height'], label='Lidar Estimate')
-        ymax = max(ax1.get_ylim()[1], ax2.get_ylim()[1], 14)
-        ax1.set_ylim([0, ymax])
-        ax2.set_ylim([0, ymax])
-        ax2.set_yticks(ax1.get_yticks())
-        ax2.legend()
-        plt.show()
 
     # Generate figures for each plot
     if generate_figures:
