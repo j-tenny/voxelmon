@@ -1,3 +1,4 @@
+# Process plant area density for a single ptx file
 import voxelmon
 import time
 time_s = time.time()
