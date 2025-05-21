@@ -6,10 +6,15 @@ treatment effect monitoring, hydrology analysis, wildlife habitat suitability, a
 If you are unfamiliar with Python, follow this [user guide](https://docs.google.com/document/d/1OuOK_Xj9kzQYp_oARr-3C10PqYRyHlgRpw89BaMAPE4/edit?usp=sharing)
 
 If you are familiar with Python:
+
 `cd [install directory]`
+
 `git clone https://github.com/j-tenny/voxelmon.git`
+
 `conda create -n [env_name]`
+
 `pip install [install directory]`
+
 `pip install requirements.txt`
 
 Or `pip install git+https://github.com/j-tenny/voxelmon.git`
