@@ -7,15 +7,15 @@ If you are unfamiliar with Python, follow this [user guide](https://docs.google.
 
 If you are familiar with Python:
 
-`cd [install directory]`
+`cd [install_directory]`
 
 `git clone https://github.com/j-tenny/voxelmon.git`
 
 `conda create -n [env_name]`
 
-`pip install [install directory]`
+`pip install [install_directory]`
 
-`pip install requirements.txt`
+`pip install -r requirements.txt`
 
 Or `pip install git+https://github.com/j-tenny/voxelmon.git`
 
