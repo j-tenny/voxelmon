@@ -249,14 +249,15 @@ def plot_side_view(xyz,direction=0,demPtsNormalize=None,returnData=False):
     else:
         return plt.imshow(np.rot90(bins),extent=extents2D)
 
-def summarize_profiles(profiles, bin_height=.1, min_height=1., fsg_threshold=.011, cbd_col='cbd_pred', height_col ='height', pad_col='pad', occlusion_col='occluded', plot_id_col='Plot_ID'):
 
-    profiles_filter_h = profiles[profiles[height_col]>=min_height]
+def summarize_profiles(profiles, bin_height=.1, min_height=1., fsg_threshold=.011, cbd_col='cbd_pred',
+                       height_col='height', pad_col='pad', occlusion_col='occluded', plot_id_col='Plot_ID'):
+    profiles_filter_h = profiles[profiles[height_col] >= min_height]
     summary = profiles_filter_h.pivot_table(index=plot_id_col,
                                             aggfunc={cbd_col: 'sum', pad_col: 'sum', occlusion_col: 'mean'}
                                             ).reset_index()
 
-    summary.columns = [plot_id_col,'cfl','occlusion','plant_area']
+    summary.columns = [plot_id_col, 'cfl', 'occlusion', 'plant_area']
     summary['cfl'] *= bin_height
     summary['plant_area'] *= bin_height
     summary['fsg'] = 0.
@@ -264,92 +265,46 @@ def summarize_profiles(profiles, bin_height=.1, min_height=1., fsg_threshold=.01
     summary['fsg_h2'] = float(min_height)
     summary['canopy_height'] = 0.
     summary['canopy_ratio'] = 0.
-    summary.insert(1,'cbd_max',0.)
+    summary.insert(1, 'cbd_max', 0.)
 
-    # Estimate cbd and fuel strata gap. Tolerate noise in profile by looking for a block of bins below the fsg threshold.
-    min_contiguous_empty = .5 # Meters
-    min_contiguous_filled = .5 # Meters
-    #noise_bumps_allowed = 2 # Number of noisy bins
-    noise_bumps_allowed = int(.25 * (min_contiguous_empty / bin_height)) + 1 # Number of noisy bins
+    cbd_window_size_bins = int(3.96 / bin_height)  # 3.96m is the 13-foot running mean used in FVS-FFE
 
     for plot_id in profiles[plot_id_col].unique():
-        profile = profiles[profiles[plot_id_col]==plot_id]
+        profile = profiles[profiles[plot_id_col] == plot_id]
         profile = profile.sort_values(by=height_col)
-        profile = profile[[height_col,cbd_col]].to_numpy()
-        #profile[np.isnan(profile[:,1]),1] = 0
+        profile = profile[[height_col, cbd_col]].to_numpy()
+        heights = np.arange(profile[:, 0].min(), profile[:, 0].max() + bin_height, bin_height)
+        cbd = np.interp(heights, profile[:, 0], profile[:, 1])
+        cbd_smooth = smooth_w_running_avg(cbd, cbd_window_size_bins)
 
         # Calculate FSG
-        fsg_h1 = min_height
-        fsg_h2 = min_height
-        fsg_h1_temp = min_height
-        fsg_h2_temp = min_height
-        empty_counter = 0
-        filled_counter = 0
-        noise_bumps = 0
-        has_gap = False
-
-        for i in range(profile.shape[0]):
-            if profile[i,1] < fsg_threshold:
-                # Bin is "empty"
-                # Decide whether to reset filled_counter
-                if filled_counter != 0:
-                    noise_bumps += 1
-                    if noise_bumps > noise_bumps_allowed:
-                        filled_counter = 0
-
-                # If empty_counter is zero, set height as bottom of fsg. Start counting from here.
-                if empty_counter == 0:
-                    fsg_h1_temp = profile[i,0]
-                    noise_bumps = 0
-
-                # Increase empty counter
-                empty_counter += 1
-
-                # confirm if a gap exists
-                if empty_counter >= min_contiguous_filled / bin_height:
-                    has_gap = True
-
-                # If empty space meets criteria, save the height we've been counting from. Ensure fsg_h1 is only set once.
-                if (fsg_h1==min_height) and (empty_counter >= (min_contiguous_empty / bin_height)):
-                    fsg_h1 = fsg_h1_temp
-                    filled_counter = 0 # Record fsg top at next "filled" bin
-
-            elif profile[i,1] >= fsg_threshold:
-                # Bin is "filled"
-                # Decide whether to reset empty_counter
-                if empty_counter != 0:
-                    noise_bumps += 1
-                    if noise_bumps > noise_bumps_allowed:
-                        empty_counter = 0
-
-                # If filled_counter is zero, set height as top of fsg. Start counting from here.
-                if filled_counter==0:
-                    fsg_h2_temp = profile[i,0]
-                    noise_bumps = 0
-
-                # Increase counter
-                filled_counter += 1
-
-                # If filled space meets criteria, save height and we're done
-                if (filled_counter >= min_contiguous_filled / bin_height) and has_gap:
-                    fsg_h2 = fsg_h2_temp
-                    break
-
-            else:
-                # Data is probably na
-                continue
-        if fsg_h1==min_height:
+        if cbd_smooth[0] < fsg_threshold:
+            # If profile starts "empty", get lowest height where profile is "filled"
             fsg_h1 = 0
-        if fsg_h2==min_height:
-            fsg_h2 = 0
+            filled_mask = cbd_smooth >= fsg_threshold
+            if filled_mask.sum() > 0:
+                fsg_h2 = np.min(heights[filled_mask])
+            else:
+                fsg_h2 = 0
+        else:
+            # If profile starts "filled", get lowest height where profile is "empty"
+            fsg_h1 = np.min(heights[cbd_smooth < fsg_threshold])
+            # Remove values below fsg_h1
+            heights_clip = heights[heights >= fsg_h1]
+            cbd_clip = cbd[heights >= fsg_h1]
+            # Get lowest height where profile is "filled"
+            filled_mask = cbd_clip >= fsg_threshold
+            if filled_mask.sum() > 0:
+                fsg_h2 = np.min(heights_clip[filled_mask])
+            else:
+                fsg_h2 = fsg_h1
+
         summary.loc[summary[plot_id_col] == plot_id, 'fsg_h1'] = fsg_h1
         summary.loc[summary[plot_id_col] == plot_id, 'fsg_h2'] = fsg_h2
         summary.loc[summary[plot_id_col] == plot_id, 'fsg'] = fsg_h2 - fsg_h1
 
         # Calculate effective canopy bulk density
-        cbd_window_size_bins = int(3.96 / bin_height) # 3.96m is the 13-foot running mean used in FVS-FFE
-        cbd = profile[:,1]
-        cbd_max = float(smooth_w_running_avg(cbd, cbd_window_size_bins).max())
+        cbd_max = cbd_smooth.max()
         summary.loc[summary[plot_id_col] == plot_id, 'cbd_max'] = cbd_max
 
         # Calculate canopy height and ratio
@@ -360,6 +315,138 @@ def summarize_profiles(profiles, bin_height=.1, min_height=1., fsg_threshold=.01
 
     return summary
 
+
+def summarize_profiles_from_grid(cbd_arr, z_coords, interpolated_resolution=.1, fsg_threshold=.011):
+    from numba import njit, float64
+    heights = np.arange(z_coords.min(), z_coords.max() + interpolated_resolution, interpolated_resolution)
+    cbd_max_arr = np.zeros([cbd_arr.shape[0], cbd_arr.shape[1]], float)
+    cfl_arr = np.zeros_like(cbd_max_arr)
+    fsg_h1_arr = np.zeros_like(cbd_max_arr)
+    fsg_h2_arr = np.zeros_like(cbd_max_arr)
+    fsg_arr = np.zeros_like(cbd_max_arr)
+    ch_arr = np.zeros_like(cbd_max_arr)
+    cr_arr = np.zeros_like(cbd_max_arr)
+
+    @njit((float64[:, :, :],
+           float64[:],
+           float64[:],
+           float64,
+           float64[:, :],
+           float64[:, :],
+           float64[:, :],
+           float64[:, :],
+           float64[:, :],
+           float64[:, :],
+           float64[:, :]), parallel=True)
+    def summarize_grid(cbd_arr,
+                       heights_og,
+                       heights,
+                       fsg_threshold,
+                       cbd_max_arr,
+                       cfl_arr,
+                       fsg_h1_arr,
+                       fsg_h2_arr,
+                       fsg_arr,
+                       ch_arr,
+                       cr_arr):
+
+        for i in prange(cbd_arr.shape[0]):
+            for j in prange(cbd_arr.shape[1]):
+
+                cbd_og = cbd_arr[i, j, :]
+
+                # Interpolate cbd from heights_og to heights
+                cbd = np.zeros_like(heights)
+
+                k = 0
+                h0 = heights_og[k]
+                h1 = heights_og[k + 1]
+                cbd0 = cbd_og[k]
+                cbd1 = cbd_og[k + 1]
+                slope = (cbd1 - cbd0) / (h1 - h0)
+                for ht_idx in range(heights.size):
+                    ht = heights[ht_idx]
+
+                    if ht <= heights_og[0]:
+                        cbd[ht_idx] = cbd_og[0]
+                    elif ht >= heights_og[-1]:
+                        cbd[ht_idx] = cbd_og[-1]
+                    else:
+                        while ht >= heights_og[k + 1]:
+                            k += 1
+                            h0 = heights_og[k]
+                            h1 = heights_og[k + 1]
+                            cbd0 = cbd_og[k]
+                            cbd1 = cbd_og[k + 1]
+                            slope = (cbd1 - cbd0) / (h1 - h0)
+
+                        cbd[ht_idx] = cbd0 + slope * (ht - h0)
+
+                # Smooth with running average
+                bin_height = heights[1] - heights[0]
+                window_size = int(3.96 / bin_height)  # 3.96m is the 13-foot running mean used in FVS-FFE
+                cbd_pad = np.full(cbd.size + 2 * window_size, 0)  # pad start and end of values with zeros
+                cbd_pad[window_size:window_size + cbd.size] = cbd
+                n = cbd_pad.size
+                cbd_smooth_pad = np.empty(n, dtype=np.float64)
+                half_window = window_size // 2
+                for cbd_idx in prange(n):
+                    start = max(0, cbd_idx - half_window)
+                    end = min(n, cbd_idx + half_window + 1)
+                    cbd_smooth_pad[cbd_idx] = np.nanmean(cbd_smooth_pad[start:end])
+                cbd_smooth = cbd_smooth_pad[window_size:-window_size]
+
+                # Calculate FSG
+                if cbd_smooth[0] < fsg_threshold:
+                    # If profile starts "empty", get lowest height where profile is "filled"
+                    fsg_h1 = 0
+                    filled_mask = cbd_smooth >= fsg_threshold
+                    if filled_mask.sum() > 0:
+                        fsg_h2 = np.min(heights[filled_mask])
+                    else:
+                        fsg_h2 = 0
+                else:
+                    # If profile starts "filled", get lowest height where profile is "empty"
+                    fsg_h1 = np.min(heights[cbd_smooth < fsg_threshold])
+                    # Remove values below fsg_h1
+                    heights_clip = heights[heights >= fsg_h1]
+                    cbd_clip = cbd[heights >= fsg_h1]
+                    # Get lowest height where profile is "filled"
+                    filled_mask = cbd_clip >= fsg_threshold
+                    if filled_mask.sum() > 0:
+                        fsg_h2 = np.min(heights_clip[filled_mask])
+                    else:
+                        fsg_h2 = fsg_h1
+
+                fsg_h1_arr[i, j] = fsg_h1
+                fsg_h2_arr[i, j] = fsg_h2
+                fsg_arr[i, j] = fsg_h2 - fsg_h1
+
+                # Calculate effective canopy bulk density
+                cbd_max_arr[i, j] = cbd_smooth.max()
+
+                # Calculate canopy fuel load
+                cfl_arr[i, j] = cbd_og.sum()
+
+                # Calculate canopy height and ratio
+                ch = np.max(heights_og[cbd_og > 0])
+                cr = (ch - fsg_h2) / ch
+                ch_arr[i, j] = ch
+                cr_arr[i, j] = cr
+
+    summarize_grid(cbd_arr,
+                   z_coords,
+                   heights,
+                   fsg_threshold,
+                   cbd_max_arr,
+                   cfl_arr,
+                   fsg_h1_arr,
+                   fsg_h2_arr,
+                   fsg_arr,
+                   ch_arr,
+                   cr_arr)
+
+    return [cbd_max_arr, cfl_arr, fsg_h1_arr, fsg_h2_arr, fsg_arr, ch_arr, cr_arr]
 
 
 def calculate_species_proportions(profile_data: pd.DataFrame,
