@@ -3,10 +3,27 @@ This package produces voxelized leaf area density metrics from lidar which can b
 treatment effect monitoring, hydrology analysis, wildlife habitat suitability, and more. Currently the package is compatible with single- and multiple- scan data from the Leica BLK 360 as well as ALS and UAV lidar.
 
 ## Installation
-`pip install git+https://github.com/j-tenny/voxelmon.git`
+If you are unfamiliar with Python, follow this [user guide](https://docs.google.com/document/d/1OuOK_Xj9kzQYp_oARr-3C10PqYRyHlgRpw89BaMAPE4/edit?usp=sharing)
+
+If you are familiar with Python:
+
+`cd [install_directory]`
+
+`git clone https://github.com/j-tenny/voxelmon.git`
+
+`conda create -n [env_name]`
+
+`pip install [install_directory]`
+
+`pip install -r requirements.txt`
+
+Or `pip install git+https://github.com/j-tenny/voxelmon.git`
 
 ## Usage
-This code will process a single TLS scan in .ptx format and create files within the export folder including a 3D grid 
+If you are unfamiliar with Python, follow this [user guide](https://docs.google.com/document/d/1OuOK_Xj9kzQYp_oARr-3C10PqYRyHlgRpw89BaMAPE4/edit?usp=sharing)
+
+If you are familiar with Python, look through the example_scripts folder (the folder contains its own readme).
+As a simple example, this code will process a single TLS scan in .ptx format and create files within the export folder including a 3D grid 
 with leaf area density estimates, a vertical profile of leaf area density, and plot summary metrics. The export 3D grid is
 formatted as .csv file with a row for each grid cell and columns for x, y, z coordinates, leaf (plant) area density, occlusion, etc.
 This allows the file to be opened in CloudCompare.
