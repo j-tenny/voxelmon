@@ -932,7 +932,7 @@ class ALS:
                 return pl.DataFrame({'x':x.flatten(),'y': y.flatten(), 'z':z.flatten(),'pad':lad.flatten('F')})
             elif return_type == 'xarray':
                 import xarray as xr
-                return xr.DataArray(lad,coords={'x':x_centers,'y':y_centers,'z':z_centers},dims=['x','y','x'],name='pad')
+                return xr.DataArray(lad,coords={'x':x_centers,'y':y_centers,'z':z_centers},dims=['x','y','z'],name='pad')
             elif return_type == 'voxelmon':
                 import xarray as xr
                 if bin_size_xy != bin_size_z:
@@ -1183,8 +1183,8 @@ class TLS_PTX:
 
     def _create_pseudo_returns(self, pseudoRDValue=99):
 
-        @njit([void(float64[:,:],float64[:,:],int32,int32)],parallel=False)
-        def create_pseudo_returns_nb(xyz,ptrh,nrows,ncols):
+        @njit([void(float64[:,:],int32,int32)],parallel=False)
+        def create_pseudo_returns_nb(ptrh,nrows,ncols):
             for colStart in prange(0,nrows*ncols,nrows):
                 colEnd = colStart + nrows
                 for i in range(colStart,colEnd):
@@ -1246,7 +1246,7 @@ class TLS_PTX:
 
 
 
-        create_pseudo_returns_nb(self.xyz,self.ptrh,self.nrows,self.ncols)
+        create_pseudo_returns_nb(self.ptrh,self.nrows,self.ncols)
 
         returnMask = ~self.nullMask
         # fill radial distance for non-returns

@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QLineEdit, QDoubleSpinBox, QCheckBox,
     QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog, QFormLayout, QSpinBox, QTextEdit, QStackedWidget
 )
+from PyQt5.QtCore import QTimer
 
 class ParameterForm(QWidget):
     def __init__(self, stacked_widget):
@@ -88,7 +89,7 @@ class ParameterForm(QWidget):
 
         self.close()
 
-        process(*args)
+        QTimer.singleShot(0, lambda: process(*args))
 
 
 class ConsolePage(QWidget):
@@ -158,6 +159,15 @@ def process(input_folder, export_folder, field_summary_path, canopy_model_path,
     profiles = pd.concat(profiles)
     profiles = profiles[profiles['height'] >= min_height]
 
+    pc_summary_paths = get_files_list(export_folder / 'Plot_Summary', '.csv', recursive=False)
+    pc_summaries = []
+    for summary_path in pc_summary_paths:
+        df = pd.read_csv(summary_path)
+        pc_summaries.append(df)
+    pc_summaries = pd.concat(pc_summaries)
+    pc_summaries = pc_summaries.rename(columns={'plot_id':'EVENT_ID'})
+    pc_summaries = pc_summaries.set_index('EVENT_ID')
+
     # Get fuel strata gap, effective CBD, and other summary values
     summary = voxelmon.utils.summarize_profiles(profiles, bin_height=cell_size, min_height=min_height,
                                                 fsg_threshold=.011, cbd_col='CBD', height_col='height', pad_col='pad',
@@ -168,6 +178,8 @@ def process(input_folder, export_folder, field_summary_path, canopy_model_path,
     summary = summary.join(field_summary, how='inner')
     summary['LOAD_TOTAL'] = summary['LOAD_FDF'] + summary['LOAD_10HR'] + summary['LOAD_100HR'] + summary['LOAD_LH'] + \
                             summary['LOAD_LW']
+
+    summary = summary.join(pc_summaries)
 
     # Model fire with Behave (pyrothermel)
     behave_results = []
