@@ -351,7 +351,7 @@ def summarize_profiles_from_grid(cbd_arr, z_coords, interpolated_resolution=.1, 
                        cr_arr):
 
         for i in prange(cbd_arr.shape[0]):
-            for j in prange(cbd_arr.shape[1]):
+            for j in range(cbd_arr.shape[1]):
 
                 cbd_og = cbd_arr[i, j, :]
 
@@ -383,17 +383,17 @@ def summarize_profiles_from_grid(cbd_arr, z_coords, interpolated_resolution=.1, 
                         cbd[ht_idx] = cbd0 + slope * (ht - h0)
 
                 # Smooth with running average
-                bin_height = heights[1] - heights[0]
-                window_size = int(3.96 / bin_height)  # 3.96m is the 13-foot running mean used in FVS-FFE
-                cbd_pad = np.full(cbd.size + 2 * window_size, 0)  # pad start and end of values with zeros
-                cbd_pad[window_size:window_size + cbd.size] = cbd
+                window_size = int(3.96 / interpolated_resolution)  # 3.96m is the 13-foot running mean used in FVS-FFE
+                cbd_pad = np.full(cbd.size + 2 * window_size, 0.,
+                                  dtype=np.float64)  # pad start and end of values with zeros
+                cbd_pad[window_size:window_size + cbd.size] = np.copy(cbd)
                 n = cbd_pad.size
-                cbd_smooth_pad = np.empty(n, dtype=np.float64)
+                cbd_smooth_pad = np.empty(n, np.float64)
                 half_window = window_size // 2
-                for cbd_idx in prange(n):
+                for cbd_idx in range(n):
                     start = max(0, cbd_idx - half_window)
                     end = min(n, cbd_idx + half_window + 1)
-                    cbd_smooth_pad[cbd_idx] = np.nanmean(cbd_smooth_pad[start:end])
+                    cbd_smooth_pad[cbd_idx] = np.nanmean(cbd_pad[start:end])
                 cbd_smooth = cbd_smooth_pad[window_size:-window_size]
 
                 # Calculate FSG
@@ -402,35 +402,46 @@ def summarize_profiles_from_grid(cbd_arr, z_coords, interpolated_resolution=.1, 
                     fsg_h1 = 0
                     filled_mask = cbd_smooth >= fsg_threshold
                     if filled_mask.sum() > 0:
-                        fsg_h2 = np.min(heights[filled_mask])
+                        fsg_h2 = np.nanmin(heights[filled_mask])
+                        ch = np.nanmax(heights[filled_mask])
                     else:
                         fsg_h2 = 0
+                        ch = 0
                 else:
                     # If profile starts "filled", get lowest height where profile is "empty"
-                    fsg_h1 = np.min(heights[cbd_smooth < fsg_threshold])
+                    empty_mask = cbd_smooth < fsg_threshold
+                    if empty_mask.sum() > 0:
+                        fsg_h1 = np.nanmin(heights[empty_mask])
+                    else:
+                        fsg_h1 = heights[-1]
                     # Remove values below fsg_h1
                     heights_clip = heights[heights >= fsg_h1]
                     cbd_clip = cbd[heights >= fsg_h1]
                     # Get lowest height where profile is "filled"
                     filled_mask = cbd_clip >= fsg_threshold
                     if filled_mask.sum() > 0:
-                        fsg_h2 = np.min(heights_clip[filled_mask])
+                        fsg_h2 = np.nanmin(heights_clip[filled_mask])
+                        ch = np.nanmax(heights_clip[filled_mask])
                     else:
                         fsg_h2 = fsg_h1
+                        ch = fsg_h1
 
                 fsg_h1_arr[i, j] = fsg_h1
                 fsg_h2_arr[i, j] = fsg_h2
                 fsg_arr[i, j] = fsg_h2 - fsg_h1
+                ch_arr[i, j] = ch
 
                 # Calculate effective canopy bulk density
                 cbd_max_arr[i, j] = cbd_smooth.max()
 
                 # Calculate canopy fuel load
-                cfl_arr[i, j] = cbd_og.sum()
+                cfl_arr[i, j] = cbd_og.sum() * (heights_og[1] - heights_og[0])
 
                 # Calculate canopy height and ratio
-                ch = np.max(heights_og[cbd_og > 0])
-                cr = (ch - fsg_h2) / ch
+                if ch > 0:
+                    cr = (ch - fsg_h2) / ch
+                else:
+                    cr = 1
                 ch_arr[i, j] = ch
                 cr_arr[i, j] = cr
 
