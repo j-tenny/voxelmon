@@ -15,8 +15,6 @@ If you are familiar with Python:
 
 `pip install [install_directory]`
 
-`pip install -r requirements.txt`
-
 Or `pip install git+https://github.com/j-tenny/voxelmon.git`
 
 ## Usage

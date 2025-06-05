@@ -4,8 +4,6 @@
 import numpy as np
 import pyvista
 import polars
-import os
-from PIL import Image
 from pathlib import Path
 
 grid_path = 'D:/DataWork/TontoFinalResultsMulti/PAD/T1123071401.csv'

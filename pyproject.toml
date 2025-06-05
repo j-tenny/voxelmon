@@ -1,3 +1,42 @@
 [build-system]
 requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["voxelmon"]
+include-package-data = true
+
+[project]
+name = "voxelmon"
+version = "0.1.1"
+description = "Estimate voxelized leaf area density metrics from lidar for wildfire risk modeling, treatment effect monitoring, hydrology analysis, wildlife habitat suitability, and more."
+license = 'LGPL-2.0-or-later'
+license-files = ["LICENSE.txt"]
+authors = [
+    { name="Johnathan Tenny", email="jt893@nau.edu" },
+]
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "numba",
+    "numpy",
+    "polars",
+    "pandas",
+    "scipy",
+    "pyarrow",
+    "statsmodels",
+    "xarray",
+    "matplotlib"
+]
+
+[project.optional-dependencies]
+viz3d = [
+    "pyvista"
+]
+model-building = [
+    "pymc",
+    "nsvb"
+]
+
+[project.urls]
+Homepage = 'https://github.com/j-tenny/voxelmon'

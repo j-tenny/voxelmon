@@ -1,5 +1,5 @@
 # Train and test a canopy bulk density profile model for multiple-scan lidar using methods from Tenny et al 2025
-# Requires pymc and scikit-learn libraries `conda install pymc scikit-learn`
+# Requires additional libraries `conda install pymc scikit-learn seaborn`
 #%%#####################################################################################################################
 import pandas as pd
 import time
