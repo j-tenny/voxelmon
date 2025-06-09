@@ -902,7 +902,10 @@ class ALS:
         from voxelmon.utils import bin3D
         import polars as pl
 
-        arr = self.points.select(['X','Y','HeightAboveGround']).to_numpy()
+        arr = (self.points
+               .filter(pl.col('Classification').lt(7) & pl.col('HeightAboveGround').lt(130))
+               .select(['X','Y','HeightAboveGround'])
+               .to_numpy())
         arr[arr[:,2]<0,2] = 0 # Assign negative heights to 0
 
         arr[:,2] -= min_height

@@ -317,7 +317,8 @@ def summarize_profiles(profiles, bin_height=.1, min_height=1., fsg_threshold=.01
 
 
 def summarize_profiles_from_grid(cbd_arr, z_coords, interpolated_resolution=.1, fsg_threshold=.011):
-    from numba import njit, float64
+    from numba import njit, float64,jit,prange
+    import matplotlib.pyplot as plt
     heights = np.arange(z_coords.min(), z_coords.max() + interpolated_resolution, interpolated_resolution)
     cbd_max_arr = np.zeros([cbd_arr.shape[0], cbd_arr.shape[1]], float)
     cfl_arr = np.zeros_like(cbd_max_arr)
@@ -359,28 +360,32 @@ def summarize_profiles_from_grid(cbd_arr, z_coords, interpolated_resolution=.1, 
                 cbd = np.zeros_like(heights)
 
                 k = 0
-                h0 = heights_og[k]
-                h1 = heights_og[k + 1]
-                cbd0 = cbd_og[k]
-                cbd1 = cbd_og[k + 1]
-                slope = (cbd1 - cbd0) / (h1 - h0)
-                for ht_idx in range(heights.size):
-                    ht = heights[ht_idx]
+                if heights_og.size > 1:
+                    h0 = heights_og[0]
+                    h1 = heights_og[1]
+                    cbd0 = cbd_og[0]
+                    cbd1 = cbd_og[1]
+                    slope = (cbd1 - cbd0) / (h1 - h0)
 
-                    if ht <= heights_og[0]:
-                        cbd[ht_idx] = cbd_og[0]
-                    elif ht >= heights_og[-1]:
-                        cbd[ht_idx] = cbd_og[-1]
-                    else:
-                        while ht >= heights_og[k + 1]:
-                            k += 1
-                            h0 = heights_og[k]
-                            h1 = heights_og[k + 1]
-                            cbd0 = cbd_og[k]
-                            cbd1 = cbd_og[k + 1]
-                            slope = (cbd1 - cbd0) / (h1 - h0)
+                    for ht_idx in range(heights.size):
+                        ht = heights[ht_idx]
 
-                        cbd[ht_idx] = cbd0 + slope * (ht - h0)
+                        if ht <= heights_og[0]:
+                            cbd[ht_idx] = cbd_og[0]
+                        elif ht >= heights_og[-1]:
+                            cbd[ht_idx] = cbd_og[-1]
+                        else:
+                            while ht >= heights_og[k + 1]:
+                                k += 1
+                                h0 = heights_og[k]
+                                h1 = heights_og[k + 1]
+                                cbd0 = cbd_og[k]
+                                cbd1 = cbd_og[k + 1]
+                                slope = (cbd1 - cbd0) / (h1 - h0)
+
+                            cbd[ht_idx] = cbd0 + slope * (ht - h0)
+                else:
+                    cbd[0] = cbd_og[0]
 
                 # Smooth with running average
                 window_size = int(3.96 / interpolated_resolution)  # 3.96m is the 13-foot running mean used in FVS-FFE
@@ -432,10 +437,16 @@ def summarize_profiles_from_grid(cbd_arr, z_coords, interpolated_resolution=.1, 
                 ch_arr[i, j] = ch
 
                 # Calculate effective canopy bulk density
-                cbd_max_arr[i, j] = cbd_smooth.max()
+                cbd_max = cbd_smooth.max()
+                cbd_max_arr[i, j] = cbd_max
 
                 # Calculate canopy fuel load
-                cfl_arr[i, j] = cbd_og.sum() * (heights_og[1] - heights_og[0])
+                if heights_og.size > 1:
+                    bin_size_og = heights_og[1] - heights_og[0]
+                else:
+                    bin_size_og = heights_og[0]
+
+                cfl_arr[i, j] = cbd_og.sum() * bin_size_og
 
                 # Calculate canopy height and ratio
                 if ch > 0:
@@ -444,6 +455,16 @@ def summarize_profiles_from_grid(cbd_arr, z_coords, interpolated_resolution=.1, 
                     cr = 1
                 ch_arr[i, j] = ch
                 cr_arr[i, j] = cr
+                #
+                # if cbd_max>0:
+                #     if np.random.random() <= .005:
+                #         plt.axhspan(fsg_h1, fsg_h2,alpha=0.5)
+                #         plt.plot(cbd_smooth,heights,c='blue')
+                #         plt.plot(cbd_og, heights_og,c='red', ls='--')
+                #         plt.axvline(cbd_smooth.max(),c='black')
+                #         plt.axvline(fsg_threshold,c='black',ls='--')
+                #         plt.show()
+
 
     summarize_grid(cbd_arr,
                    z_coords,
