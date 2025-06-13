@@ -36,11 +36,22 @@ ptx = voxelmon.TLS_PTX(ptxFile, apply_translation=True, apply_rotation=True, dro
 grid, profile, plot_summary = ptx.execute_default_processing(export_dir=export_dir, plot_name='scan1', cell_size=0.1,
                                                              plot_radius=11.3, max_height=50, max_occlusion=0.75,
                                                              sigma1=0, min_pad_foliage=.01, max_pad_foliage=6)
+# This opens an interactive 3D viewer
+grid.visualize_3d()
 ```
+
+![ReadmeImg1.png](example_outputs/ReadmeImg1.png)
+
+The example script process_predict_ptx_dir.py can be followed to produce foliage biomass estimates, plot summary metrics,
+and potential fire behavior estimates. Look through the [user guide](https://docs.google.com/document/d/1OuOK_Xj9kzQYp_oARr-3C10PqYRyHlgRpw89BaMAPE4/edit?usp=sharing) to understand the inputs for this process.
+
+![ReadmeImg2.png](example_outputs/ReadmeImg2.png)
 
 Scripts to recreate the analysis from the publication "Canopy and surface fuels measurement using 
 terrestrial lidar single-scan approach in the Mogollon highlands of Arizona" are located in the branch final_analysis_tenny_et_al_2025. The
-master branch will be updated with newer algorithms and pipelines for additional data sources. 
+master branch will be updated with newer algorithms and pipelines for additional data sources.
+
+
 
 ## Contact
 
