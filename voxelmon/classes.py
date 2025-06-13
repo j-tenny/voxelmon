@@ -629,6 +629,25 @@ class Grid:
 
         return summary
 
+    def visualize_3d(self, points:'pl.DataFrame'=None,
+                     clip_extents='auto',
+                     value_name: str = 'pad',
+                     min_value_leaf: float = 0.2,
+                     max_value_leaf: float = 6,
+                     min_hag: float = 0.1,
+                     recenter_elev: bool = False):
+        import polars
+        dem = polars.DataFrame({'x': self.centers_xy[:, 0], 'y': self.centers_xy[:, 1], 'z':self.dem.flatten()})
+        voxelmon.visualize_voxels(grid=self.to_polars(),
+                                  dem=dem,
+                                  points=points,
+                                  clip_extents=clip_extents,
+                                  value_name=value_name,
+                                  min_value_leaf=min_value_leaf,
+                                  max_value_leaf=max_value_leaf,
+                                  min_hag=min_hag,
+                                  recenter_elev=recenter_elev)
+
     def export_grid_as_csv(self, filepath):
         """Write grid to csv file (compatible with CloudCompare and other software)"""
         df = self.to_polars()
