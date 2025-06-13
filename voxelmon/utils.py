@@ -125,7 +125,7 @@ def bin3D(pulses, function, cellSize,asArray = True, binExtents=None):
     else:
         return result
 
-def open_file_pdal(filepath,bounds=None,calculate_height=True)->Tuple['pl.DataFrame',str]:
+def open_file_pdal(filepath,bounds=None,calculate_height=True,reproject_to=None)->Tuple['pl.DataFrame',str]:
     """Read a file to a polars dataframe with pdal. Returns pl.DataFrame and crs
 
     Args:
@@ -133,28 +133,34 @@ def open_file_pdal(filepath,bounds=None,calculate_height=True)->Tuple['pl.DataFr
         bounds (str): Clip extents of the resource in 2 or 3 dimensions, formatted as pdal-compatible string,
             e.g.: ([xmin, xmax], [ymin, ymax], [zmin, zmax]). If omitted, the entire dataset will be selected.
             The bounds can be followed by a slash (‘/’) and a spatial reference specification to apply to the bounds.
+        calculate_height (bool): Calculate height above ground for each point using Delauney triangulation
+        reproject_to (str): Reproject to this CRS. Use format 'EPSG:5070' or PROJ. If None, no reprojection will be done.
                 """
     import pdal
     import polars as pl
 
     result=0
+
+    filters = []
+    if bounds is not None:
+        filters.append(pdal.Reader(filepath, bounds=bounds))
+    else:
+        filters.append(pdal.Reader(filepath))
+
+    if reproject_to is not None:
+        filters.append(pdal.Filter.reprojection(out_srs=reproject_to))
+
     if calculate_height:
         count = 10
         while result == 0 and count < 100:
+            filters_temp = filters + [pdal.Filter.hag_delaunay(count=count)]
             try:
-                if bounds is not None:
-                    pipeline = pdal.Pipeline([pdal.Reader(filepath, bounds=bounds),
-                                              pdal.Filter.hag_delaunay(count=count)])
-                else:
-                    pipeline = pdal.Pipeline([pdal.Reader(filepath), pdal.Filter.hag_delaunay(count=count)])
+                pipeline = pdal.Pipeline(filters_temp)
                 result = pipeline.execute()
             except:
                 count *= 2
     else:
-        if bounds is not None:
-            pipeline = pdal.Pipeline([pdal.Reader(filepath, bounds=bounds)])
-        else:
-            pipeline = pdal.Pipeline([pdal.Reader(filepath)])
+        pipeline = pdal.Pipeline(filters)
         pipeline.execute()
 
     return pl.DataFrame(pipeline.arrays[0]), pipeline.srswkt2
@@ -816,4 +822,207 @@ def profiles_from_treelist(treelist:pd.DataFrame,
     profiles.insert(2, ht_col, profiles['HT_BIN'] * ht_interval)
     return profiles
 
+def visualize_voxels(grid:'pl.DataFrame',
+                     dem:'pl.DataFrame',
+                     points:'pl.DataFrame'=None,
+                     clip_extents='auto',
+                     value_name:str='pad',
+                     min_value_leaf:float=0.2,
+                     max_value_leaf:float=6,
+                     min_hag:float=0.1,
+                     recenter_elev:bool=False)->None:
+    """
+    Show an interactive 3D viewer displaying voxel grid, DEM, and (optionally) point cloud.
+
+    Args:
+
+        grid (pl.DataFrame): Polars DataFrame containing voxel grid (one row for each voxel. Columns must
+            include 'x', 'y', 'z', 'classification', 'hag' and value_name (default='pad')
+
+        dem (pl.DataFrame): Polars DataFrame containing DEM in point format (row for each cell, columns xyz).
+
+        clip_extents (str or list): Spatial extent to crop the visualization.
+            Can be 'auto', a list of 4 floats [xmin, ymin, xmax, ymax], or 6 floats
+            [xmin, ymin, zmin, xmax, ymax, zmax]. Defaults to 'auto'.
+
+        value_name (str): Name of the voxel attribute used for scalar coloring.
+            Defaults to 'pad'.
+
+        min_value_leaf (float): Voxels with value below this threshold are considered "empty", not rendered.
+
+        max_value_leaf (float): Voxels with value below this threshold are considered "leaves" and rendered along the
+            yellow-green color scale. Voxels with value above this threshold are considered "non-foliage" and rendered in
+            brown. Recommended value to visualize 'pad' from the BLK360 is 6. Recommended value to visualize 'pad' from
+            ALS is 1.
+
+        min_hag (float): Minimum height above ground for voxels to be rendered. Defaults to 0.1, consider 1.0 for ALS.
+
+        recenter_elev (bool): If True, DEM and all data are centered around the DEM's mean elevation. Useful for
+            ALS data. Defaults to False.
+
+    """
+    import numpy as np
+    import pyvista as pv
+    import polars as pl
+
+    grid.columns = [col.lower() for col in grid.columns]
+    grid = grid.select(['x','y','z','hag','classification',value_name])
+    cell_size = round(grid[1, 0] - grid[0, 0], 5)
+
+    # Determine extents
+    if clip_extents == 'auto':
+        extents = np.concatenate([
+            grid[:, 0:3].min().to_numpy().flatten(),
+            grid[:, 0:3].max().to_numpy().flatten()
+        ])
+    elif len(clip_extents) == 4:
+        extents = np.concatenate([
+            grid[:, 0:3].min().to_numpy().flatten(),
+            grid[:, 0:3].max().to_numpy().flatten()
+        ])
+        extents[0:2] = clip_extents[0:2]
+        extents[3:5] = clip_extents[2:4]
+    elif len(clip_extents) == 6:
+        extents = np.array(clip_extents)
+    else:
+        raise ValueError("clip_extents must be 'auto', or a list of 4 or 6 floats")
+
+    # Clip grid
+    grid = grid.filter(
+        (grid[:, 0] >= extents[0]) & (grid[:, 0] <= extents[3]) &
+        (grid[:, 1] >= extents[1]) & (grid[:, 1] <= extents[4]) &
+        (grid[:, 2] >= extents[2]) & (grid[:, 2] <= extents[5])
+    )
+
+    # Load and clip DEM
+    dem.columns = [col.lower() for col in dem.columns]
+    dem = dem.select(['x','y','z'])
+    dem = dem.filter(
+        (dem[:, 0] >= extents[0]) & (dem[:, 0] <= extents[3]) &
+        (dem[:, 1] >= extents[1]) & (dem[:, 1] <= extents[4])
+    )
+    dem = dem.to_numpy()
+
+    # Recenter elevation coordinates to zero
+    if recenter_elev:
+        center = dem.mean(axis=0)
+        dem -= center
+        grid = grid.with_columns([
+            pl.col('x') - center[0],
+            pl.col('y') - center[1],
+            pl.col('z') - center[2]
+        ])
+    else:
+        center = None
+
+    if points is not None:
+        show_points=True
+    else:
+        show_points=False
+
+    if show_points:
+        points.columns = [col.lower() for col in points.columns]
+        points = points.select(['x','y','z'])
+        points = points.filter(
+            (points[:, 0] >= extents[0]) & (points[:, 0] <= extents[3]) &
+            (points[:, 1] >= extents[1]) & (points[:, 1] <= extents[4]) &
+            (points[:, 2] >= extents[2]) & (points[:, 2] <= extents[5])
+            )
+        points = points.to_numpy()
+
+        if recenter_elev:
+            points -= center
+        pts_all = pv.PolyData(points[:, :3])
+
+    shape = ((dem.max(0) - dem.min(0)) / cell_size).round().astype(int) + 1
+    dem_grid = pv.StructuredGrid(
+        dem[:, 0].reshape(shape[0:2]),
+        dem[:, 1].reshape(shape[0:2]),
+        dem[:, 2].reshape(shape[0:2])
+    ).texture_map_to_plane()
+
+    # Classification masks
+    leaf_mask = ((pl.col('classification') > 0) &
+                 (pl.col('hag') >= min_hag) &
+                 (pl.col(value_name) >= min_value_leaf) &
+                 (pl.col(value_name) <= max_value_leaf))
+    wood_mask = ((pl.col('classification') > 0) &
+                 (pl.col('hag') >= min_hag) &
+                 (pl.col(value_name) > max_value_leaf)
+                 )
+    occluded_mask = (pl.col('classification') == -1)
+
+    base_cube = pv.Cube(center=(0, 0, 0), x_length=cell_size, y_length=cell_size, z_length=cell_size)
+    filled_pts = pv.PolyData(grid.filter(leaf_mask)[:, :3].to_numpy())
+    filled_values = grid.filter(leaf_mask)[value_name].to_numpy()
+    filled_values = np.repeat(filled_values, 6)
+    filled_glyphs = filled_pts.glyph(orient=False, scale=False, geom=base_cube)
+
+    plotter = pv.Plotter(lighting='three lights')
+    plotter.set_background('black', top='white')
+    plotter.enable_ssao(radius=1)
+    plotter.enable_terrain_style(mouse_wheel_zooms=True, shift_pans=True)
+    plotter.add_axes(interactive=True)
+    pv.global_theme.full_screen = True
+
+    scalar_bar_args = {
+        'title': 'Plant Area Density (m²/m³)',
+        'label_font_size': 24,
+        'title_font_size': 24,
+        'color': 'white'
+    }
+
+    # Add filled voxels
+    filled_actor = plotter.add_mesh(
+        filled_glyphs, scalars=filled_values, clim=[0, max_value_leaf],
+        opacity=1, cmap='YlGn', show_scalar_bar=True, scalar_bar_args=scalar_bar_args
+    )
+
+    # Add wood voxels
+    if len(grid.filter(wood_mask)) > 0:
+        wood_pts = pv.PolyData(grid.filter(wood_mask)[:, :3].to_numpy())
+        wood_glyphs = wood_pts.glyph(orient=False, scale=False, geom=base_cube)
+        wood_actor = plotter.add_mesh(wood_glyphs, color='brown', opacity=1)
+    else:
+        wood_actor = None
+
+    # Add occluded voxels
+    if len(grid.filter(occluded_mask)) > 0:
+        occ_pts = pv.PolyData(grid.filter(occluded_mask)[:, :3].to_numpy())
+        occ_glyphs = occ_pts.glyph(orient=False, scale=False, geom=base_cube)
+        occ_actor = plotter.add_mesh(occ_glyphs, color=True, opacity=0.25)
+    else:
+        occ_actor = None
+
+    # Add scanner and DEM
+    plotter.add_mesh(pv.Cylinder((0, 0, -1), direction=(0, 0, 1), radius=0.05, height=2), color='black')
+    plotter.add_mesh(pv.Sphere(radius=0.2), color='black')
+    plotter.add_mesh(dem_grid, color='#8A5D36', smooth_shading=True)
+
+    if show_points:
+        pts_actor = plotter.add_mesh(pts_all, scalars=points[:, 2], clim=[-3, 12], show_scalar_bar=False)
+        pts_actor.SetVisibility(False)
+
+    # Slider to adjust filled voxel opacity
+    def set_filled_opacity(value):
+        filled_actor.GetProperty().SetOpacity(value)
+        if wood_actor:
+            wood_actor.GetProperty().SetOpacity(value)
+
+    plotter.add_slider_widget(set_filled_opacity, [0, 1], title='Filled Voxel Opacity',
+                              pointa=(.1, .9), pointb=(.3, .9), value=1)
+
+    # Slider to adjust occluded voxel opacity
+    def set_occluded_opacity(value):
+        if occ_actor:
+            occ_actor.GetProperty().SetOpacity(value)
+
+    plotter.add_slider_widget(set_occluded_opacity, [0, 1], title='Occluded Voxel Opacity',
+                              pointa=(.1, .7), pointb=(.3, .7), value=0.25)
+
+    # Checkbox to show/hide points
+    if show_points:
+        plotter.add_checkbox_button_widget(lambda flag: pts_actor.SetVisibility(flag), value=False, size=20)
+
+    plotter.show()
 

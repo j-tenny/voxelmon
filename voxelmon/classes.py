@@ -755,20 +755,25 @@ class Pulses:
             self.df.write_csv(filepath)
 
 class ALS:
-    def __init__(self,filepath, bounds:str = None, calculate_height:bool=False):
+    def __init__(self,filepath, bounds:str = None, calculate_height:bool=False,reproject_to=None):
         """Initialize ALS reader
 
         Args:
             filepath (str): Path to ALS file readable by pdal. Type is inferred by extension.
+
             bounds (str): Clip extents of the resource in 2 or 3 dimensions, formatted as pdal-compatible string,
                 e.g.: ([xmin, xmax], [ymin, ymax], [zmin, zmax]). If omitted, the entire dataset will be selected.
                 The bounds can be followed by a slash (‘/’) and a spatial reference specification to apply to the bounds.
+
             calculate_height (bool): Calculate height above ground for each pulse with pdal delauney method
+
+            reproject_to (str): Reproject to this CRS. Use format 'EPSG:5070' or PROJ. If None, no reprojection will be done.
+
             """
         from voxelmon.utils import open_file_pdal
         self.path = filepath
         self.bounds = bounds
-        self.points, self.crs = open_file_pdal(self.path, self.bounds, calculate_height=calculate_height)
+        self.points, self.crs = open_file_pdal(self.path, self.bounds, calculate_height=calculate_height, reproject_to=reproject_to)
 
     def estimate_flightpath(self, min_separation:float=2,
                             time_bin_size:float=.5,
