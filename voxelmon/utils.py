@@ -294,15 +294,20 @@ def summarize_profiles(profiles, bin_height=.1, min_height=1., fsg_threshold=.01
                 fsg_h2 = 0
         else:
             # If profile starts "filled", get lowest height where profile is "empty"
-            fsg_h1 = np.min(heights[cbd_smooth < fsg_threshold])
-            # Remove values below fsg_h1
-            heights_clip = heights[heights >= fsg_h1]
-            cbd_clip = cbd[heights >= fsg_h1]
-            # Get lowest height where profile is "filled"
-            filled_mask = cbd_clip >= fsg_threshold
-            if filled_mask.sum() > 0:
-                fsg_h2 = np.min(heights_clip[filled_mask])
+            if np.sum(cbd_smooth < fsg_threshold) > 0:
+                fsg_h1 = np.min(heights[cbd_smooth < fsg_threshold])
+                # Remove values below fsg_h1
+                heights_clip = heights[heights >= fsg_h1]
+                cbd_clip = cbd[heights >= fsg_h1]
+                # Get lowest height where profile is "filled"
+                filled_mask = cbd_clip >= fsg_threshold
+                if filled_mask.sum() > 0:
+                    fsg_h2 = np.min(heights_clip[filled_mask])
+                else:
+                    fsg_h2 = fsg_h1
             else:
+                # Profile is all "filled"
+                fsg_h1 = heights[-1]
                 fsg_h2 = fsg_h1
 
         summary.loc[summary[plot_id_col] == plot_id, 'fsg_h1'] = fsg_h1
@@ -485,6 +490,169 @@ def summarize_profiles_from_grid(cbd_arr, z_coords, interpolated_resolution=.1, 
                    cr_arr)
 
     return [cbd_max_arr, cfl_arr, fsg_h1_arr, fsg_h2_arr, fsg_arr, ch_arr, cr_arr]
+
+def summarize_profiles_from_plot_arr(cbd_arr, z_coords, interpolated_resolution=.1, fsg_threshold=.011):
+    from numba import njit, float64,jit,prange
+    import matplotlib.pyplot as plt
+    heights = np.arange(z_coords.min(), z_coords.max() + interpolated_resolution, interpolated_resolution)
+    cbd_max_arr = np.zeros(cbd_arr.shape[0], float)
+    cfl_arr = np.zeros_like(cbd_max_arr)
+    fsg_h1_arr = np.zeros_like(cbd_max_arr)
+    fsg_h2_arr = np.zeros_like(cbd_max_arr)
+    fsg_arr = np.zeros_like(cbd_max_arr)
+    ch_arr = np.zeros_like(cbd_max_arr)
+    cr_arr = np.zeros_like(cbd_max_arr)
+
+    @njit((float64[:, :],
+           float64[:],
+           float64[:],
+           float64,
+           float64[:],
+           float64[:],
+           float64[:],
+           float64[:],
+           float64[:],
+           float64[:],
+           float64[:]), parallel=True)
+    def summarize_grid(cbd_arr,
+                       heights_og,
+                       heights,
+                       fsg_threshold,
+                       cbd_max_arr,
+                       cfl_arr,
+                       fsg_h1_arr,
+                       fsg_h2_arr,
+                       fsg_arr,
+                       ch_arr,
+                       cr_arr):
+
+        for i in prange(cbd_arr.shape[0]):
+            cbd_og = cbd_arr[i, :]
+
+            # Interpolate cbd from heights_og to heights
+            cbd = np.zeros_like(heights)
+
+            k = 0
+            if heights_og.size > 1:
+                h0 = heights_og[0]
+                h1 = heights_og[1]
+                cbd0 = cbd_og[0]
+                cbd1 = cbd_og[1]
+                slope = (cbd1 - cbd0) / (h1 - h0)
+
+                for ht_idx in range(heights.size):
+                    ht = heights[ht_idx]
+
+                    if ht <= heights_og[0]:
+                        cbd[ht_idx] = cbd_og[0]
+                    elif ht >= heights_og[-1]:
+                        cbd[ht_idx] = cbd_og[-1]
+                    else:
+                        while ht >= heights_og[k + 1]:
+                            k += 1
+                            h0 = heights_og[k]
+                            h1 = heights_og[k + 1]
+                            cbd0 = cbd_og[k]
+                            cbd1 = cbd_og[k + 1]
+                            slope = (cbd1 - cbd0) / (h1 - h0)
+
+                        cbd[ht_idx] = cbd0 + slope * (ht - h0)
+            else:
+                cbd[0] = cbd_og[0]
+
+            # Smooth with running average
+            window_size = int(3.96 / interpolated_resolution)  # 3.96m is the 13-foot running mean used in FVS-FFE
+            cbd_pad = np.full(cbd.size + 2 * window_size, 0.,
+                              dtype=np.float64)  # pad start and end of values with zeros
+            cbd_pad[window_size:window_size + cbd.size] = np.copy(cbd)
+            n = cbd_pad.size
+            cbd_smooth_pad = np.empty(n, np.float64)
+            half_window = window_size // 2
+            for cbd_idx in range(n):
+                start = max(0, cbd_idx - half_window)
+                end = min(n, cbd_idx + half_window + 1)
+                cbd_smooth_pad[cbd_idx] = np.nanmean(cbd_pad[start:end])
+            cbd_smooth = cbd_smooth_pad[window_size:-window_size]
+
+            # Calculate FSG
+            if cbd_smooth[0] < fsg_threshold:
+                # If profile starts "empty", get lowest height where profile is "filled"
+                fsg_h1 = 0
+                filled_mask = cbd_smooth >= fsg_threshold
+                if filled_mask.sum() > 0:
+                    fsg_h2 = np.nanmin(heights[filled_mask])
+                    ch = np.nanmax(heights[filled_mask])
+                else:
+                    fsg_h2 = 0
+                    ch = 0
+            else:
+                # If profile starts "filled", get lowest height where profile is "empty"
+                empty_mask = cbd_smooth < fsg_threshold
+                if empty_mask.sum() > 0:
+                    fsg_h1 = np.nanmin(heights[empty_mask])
+                else:
+                    fsg_h1 = heights[-1]
+                # Remove values below fsg_h1
+                heights_clip = heights[heights >= fsg_h1]
+                cbd_clip = cbd[heights >= fsg_h1]
+                # Get lowest height where profile is "filled"
+                filled_mask = cbd_clip >= fsg_threshold
+                if filled_mask.sum() > 0:
+                    fsg_h2 = np.nanmin(heights_clip[filled_mask])
+                    ch = np.nanmax(heights_clip[filled_mask])
+                else:
+                    fsg_h2 = fsg_h1
+                    ch = fsg_h1
+
+            fsg_h1_arr[i] = fsg_h1
+            fsg_h2_arr[i] = fsg_h2
+            fsg_arr[i] = fsg_h2 - fsg_h1
+            ch_arr[i] = ch
+
+            # Calculate effective canopy bulk density
+            cbd_max = cbd_smooth.max()
+            cbd_max_arr[i] = cbd_max
+
+            # Calculate canopy fuel load
+            if heights_og.size > 1:
+                bin_size_og = heights_og[1] - heights_og[0]
+            else:
+                bin_size_og = heights_og[0]
+
+            cfl_arr[i] = cbd_og.sum() * bin_size_og
+
+            # Calculate canopy height and ratio
+            if ch > 0:
+                cr = (ch - fsg_h2) / ch
+            else:
+                cr = 1
+            ch_arr[i] = ch
+            cr_arr[i] = cr
+            #
+            # if cbd_max>0:
+            #     if np.random.random() <= .005:
+            #         plt.axhspan(fsg_h1, fsg_h2,alpha=0.5)
+            #         plt.plot(cbd_smooth,heights,c='blue')
+            #         plt.plot(cbd_og, heights_og,c='red', ls='--')
+            #         plt.axvline(cbd_smooth.max(),c='black')
+            #         plt.axvline(fsg_threshold,c='black',ls='--')
+            #         plt.show()
+
+
+    summarize_grid(cbd_arr,
+                   z_coords,
+                   heights,
+                   fsg_threshold,
+                   cbd_max_arr,
+                   cfl_arr,
+                   fsg_h1_arr,
+                   fsg_h2_arr,
+                   fsg_arr,
+                   ch_arr,
+                   cr_arr)
+
+    return [cbd_max_arr, cfl_arr, fsg_h1_arr, fsg_h2_arr, fsg_arr, ch_arr, cr_arr]
+
 
 
 def calculate_species_proportions(profile_data: pd.DataFrame,
@@ -785,7 +953,7 @@ def profiles_from_treelist(treelist:pd.DataFrame,
 
     Treelist must be in FIA format. This process is units-agnostic except for area factor, which represents area2/area1
     where input units are trees/area1 and output units are kg/(ht_unit*area2). For input trees/ha and output kg/m^3, area
-    factor is 10000 m^2/ha."""
+    factor is 10000 m^2/ha. CR must be percent format (1-100). For leaf area profile, df must have column LEAF_AREA with units in m^2."""
 
     tree_bins = []
     for i in treelist.index:
