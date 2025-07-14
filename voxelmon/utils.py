@@ -855,9 +855,11 @@ def estimate_foliage_from_treelist(treelist:pd.DataFrame,
                                    species_col = "SPCD",
                                    species_group_col = "SPGRPCD",
                                    foliage_mass_col = "DRYBIO_FOLIAGE",
+                                   agb_col = 'DRYBIO_AG',
+                                   verbose = True,
                                    input_metric=True,
                                    output_metric=True):
-    """Make canopy bulk density profile based on tree list and allometric equations from NSVB.
+    """Make canopy bulk density profile based on tree list and allometric equations from j-tenny/easy_biomass.
 
     Args:
         treelist (pd.DataFrame): table containing tree data, e.g. in FIA format
@@ -885,19 +887,38 @@ def estimate_foliage_from_treelist(treelist:pd.DataFrame,
 
     Units in other columns are not considered"""
 
-    from nsvb import estimators
+    import easy_biomass
+    import easy_biomass.conversions as conv
 
-    if input_metric:
-        treelist[dia_col] /= 2.54
-        treelist[ht_col] *= 3.2808
-        treelist[tpa_col] *= 2.471
+    if not input_metric:
+        treelist[dia_col] = conv.in2cm(treelist[dia_col])
+        treelist[ht_col] = conv.ft2m(treelist[ht_col])
+        treelist[tpa_col] = conv.tpa2tph(treelist[tpa_col])
 
-    treelist[foliage_mass_col] = 0.
-    for i in treelist.index:
-        treelist.loc[i,foliage_mass_col] = estimators.total_foliage_dry_weight(treelist.loc[i,species_col],
-                                                                               treelist.loc[i,dia_col],
-                                                                               treelist.loc[i,ht_col],
-                                                                               division)
+    allo_db = easy_biomass.Database()
+    treelist[agb_col] = allo_db.get_total_aboveground_biomass_parallel(
+        treelist,
+        spcd_col = species_col,
+        dia_col = dia_col,
+        ht_col = ht_col,
+        eco_cd_col = division,
+        use_nbel = True,
+        max_workers = None,
+        verbose = verbose
+    )
+
+    treelist[foliage_mass_col] = allo_db.get_foliage_biomass_parallel(
+        treelist,
+        spcd_col = species_col,
+        dia_col = dia_col,
+        ht_col = ht_col,
+        eco_cd_col = division,
+        use_nbel = True,
+        max_workers = None,
+        verbose = verbose
+    )
+
+    # Look up LMA by species or by species group
     if lma_ref_spcd is not None:
         if 'SPCD_OG' in treelist.columns:
             treelist = treelist.merge(lma_ref_spcd[[species_col, 'LMA']], left_on='SPCD_OG',right_on=species_col,suffixes=['','_y'], how='left')
@@ -914,9 +935,6 @@ def estimate_foliage_from_treelist(treelist:pd.DataFrame,
             treelist['LMA'] = treelist['LMA_SPCD']
             treelist.loc[treelist['LMA'].isna(),'LMA'] = treelist.loc[treelist['LMA'].isna(),'LMA_SPGRPCD']
 
-    # Convert lb to kg for leaf area calculation
-    treelist[foliage_mass_col] /= 2.2046
-
     # Calculate leaf area
     if 'LMA' in treelist.columns:
         treelist['LEAF_AREA'] = treelist[foliage_mass_col] / treelist['LMA']
@@ -924,15 +942,13 @@ def estimate_foliage_from_treelist(treelist:pd.DataFrame,
         if not output_metric:
             treelist['LEAF_AREA'] *= 10.7639
 
-    # Convert in,ft,tpa to cm,m,tpha
-    if output_metric:
-        treelist[dia_col] *= 2.54
-        treelist[ht_col] /= 3.2808
-        treelist[tpa_col] /= 2.471
-
-    # Convert kg to lb
+    # Convert in,ft,tpa,lb to cm,m,tpha,kg
     if not output_metric:
-        treelist[foliage_mass_col] *= 2.2046
+        treelist[dia_col] = conv.cm2in(treelist[dia_col])
+        treelist[ht_col] = conv.m2ft(treelist[ht_col])
+        treelist[tpa_col] = conv.tph2tpa(treelist[tpa_col])
+        treelist[agb_col] = conv.lb2kg(treelist[agb_col])
+        treelist[foliage_mass_col] = conv.lb2kg(treelist[foliage_mass_col])
 
     return treelist
 
