@@ -856,6 +856,7 @@ def estimate_foliage_from_treelist(treelist:pd.DataFrame,
                                    species_group_col = "SPGRPCD",
                                    foliage_mass_col = "DRYBIO_FOLIAGE",
                                    agb_col = 'DRYBIO_AG',
+                                   use_nbel = True,
                                    verbose = True,
                                    input_metric=True,
                                    output_metric=True):
@@ -902,7 +903,7 @@ def estimate_foliage_from_treelist(treelist:pd.DataFrame,
         dia_col = dia_col,
         ht_col = ht_col,
         eco_cd_col = division,
-        use_nbel = True,
+        use_nbel = use_nbel,
         max_workers = None,
         verbose = verbose
     )
@@ -913,7 +914,7 @@ def estimate_foliage_from_treelist(treelist:pd.DataFrame,
         dia_col = dia_col,
         ht_col = ht_col,
         eco_cd_col = division,
-        use_nbel = True,
+        use_nbel = use_nbel,
         max_workers = None,
         verbose = verbose
     )
@@ -1005,6 +1006,42 @@ def profiles_from_treelist(treelist:pd.DataFrame,
 
     profiles.insert(2, ht_col, profiles['HT_BIN'] * ht_interval)
     return profiles
+
+def rh_from_profile(profile:pd.DataFrame,
+                    quantiles:list[float]=[.1, .2, .3, .4, .5, .6, .7, .8, .9, .98],
+                    min_height:float=2.,
+                    feature_col:str='pad',
+                    ht_col:str='height',
+                    plot_id_col:str='plot_id',):
+    """Estimate relative foliage heights from leaf (plant) area density profile."""
+
+    percentiles = np.array(quantiles)
+
+    profile = profile[profile[ht_col] >= min_height]
+    lad = profile.pivot(
+        values=[feature_col],
+        index=plot_id_col,
+        columns=ht_col,
+    )
+
+    lad = lad.fillna(0)
+
+    lai = lad.sum(1) * 2  # bin_size=2m
+    lai.name = 'lai'
+    lad_max = lad.max(1)
+    ht_lad_max = np.argmax(lad, axis=1) * 2  # bin_size=2m
+
+    clad = lad.copy().to_numpy()
+    clad = np.cumsum(clad, axis=1) / clad.sum(1).repeat(clad.shape[1]).reshape(clad.shape)
+
+    heights = np.array([col[1] for col in lad.columns])
+    rh = np.apply_along_axis(lambda vals: np.interp(percentiles, vals, heights), 1, clad)
+    rh = pd.DataFrame(rh, index=lad.index, columns=[f'rh_{round(p * 100)}' for p in percentiles])
+    rh.insert(0, 'ht_lad_max', ht_lad_max)
+    rh.insert(0, 'lad_max', lad_max)
+    rh.insert(0, 'lai', lai)
+
+    return rh
 
 def visualize_voxels(grid:'pl.DataFrame',
                      dem:'pl.DataFrame',
