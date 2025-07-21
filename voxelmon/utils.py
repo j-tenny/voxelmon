@@ -4,6 +4,7 @@ from typing import Union, Sequence, Tuple
 
 
 def get_files_list(directory, keyword, recursive=True):
+    """Get list of files from directory where keyword is in the file name."""
     import os
     import fnmatch
     matching_files = []
@@ -48,18 +49,18 @@ def directory_to_pandas(directory,keyword='.csv',recursive=False,filename_col:Un
 
 
 def bin2D(pulses,function,cellSize,asArray = True,binExtents=None):
-    # Function should be from polars and should specify a column name x, y, or z, e.g. pl.min('z')
+    # Function should be from polars and should specify a column name x, y, or z, e.g. pl.min('Z')
     # binExtents must be iterable formatted as [xBinMin,yBinMin,xBinMax,yBinMax] noninclusive of end
     # if binExtents is None, extents are automatically pulled from pulses extents, may need to clip first
     import polars as pl
     import numpy as np
     try:
-        points_df = pl.DataFrame({'x':pulses.xyz[:,0],'y':pulses.xyz[:,1],'z':pulses.xyz[:,2]})
+        points_df = pl.DataFrame({'X':pulses.xyz[:,0],'Y':pulses.xyz[:,1],'Z':pulses.xyz[:,2]})
     except:
-        points_df = pl.DataFrame({'x':pulses[:,0],'y':pulses[:,1],'z':pulses[:,2]})
+        points_df = pl.DataFrame({'X':pulses[:,0],'Y':pulses[:,1],'Z':pulses[:,2]})
 
-    points_df = points_df.with_columns(pl.col('x').floordiv(cellSize).cast(pl.Int32).alias('xBin'),
-                                       pl.col('y').floordiv(cellSize).cast(pl.Int32).alias('yBin'))
+    points_df = points_df.with_columns(pl.col('X').floordiv(cellSize).cast(pl.Int32).alias('xBin'),
+                                       pl.col('Y').floordiv(cellSize).cast(pl.Int32).alias('yBin'))
 
     if binExtents is None:
         binMin = points_df[:,-2:].min().to_numpy().flatten()
@@ -81,7 +82,7 @@ def bin2D(pulses,function,cellSize,asArray = True,binExtents=None):
 
 
 def bin3D(pulses, function, cellSize,asArray = True, binExtents=None):
-    # Function should be from polars and should specify a column name x, y, or z, e.g. pl.min('z')
+    # Function should be from polars and should specify a column name x, y, or z, e.g. pl.min('Z')
     # binExtents must be iterable formatted as [xBinMin,yBinMin,zBinMin,xBinMax,yBinMax,zBinMax] noninclusive of end
     # if binExtents is None, extents are automatically pulled from pulses extents, may need to clip first
     import polars as pl
@@ -94,13 +95,13 @@ def bin3D(pulses, function, cellSize,asArray = True, binExtents=None):
         cellSize = np.repeat(cellSize,3)
 
     try:
-        points_df = pl.DataFrame({'x': pulses.xyz[:, 0], 'y': pulses.xyz[:, 1], 'z': pulses.xyz[:, 2]})
+        points_df = pl.DataFrame({'X': pulses.xyz[:, 0], 'Y': pulses.xyz[:, 1], 'Z': pulses.xyz[:, 2]})
     except:
-        points_df = pl.DataFrame({'x': pulses[:, 0], 'y': pulses[:, 1], 'z': pulses[:, 2]})
+        points_df = pl.DataFrame({'X': pulses[:, 0], 'Y': pulses[:, 1], 'Z': pulses[:, 2]})
 
-    points_df = points_df.with_columns(pl.col('x').floordiv(cellSize[0]).cast(pl.Int32).alias('xBin'),
-                                       pl.col('y').floordiv(cellSize[1]).cast(pl.Int32).alias('yBin'),
-                                       pl.col('z').floordiv(cellSize[2]).cast(pl.Int32).alias('zBin'))
+    points_df = points_df.with_columns(pl.col('X').floordiv(cellSize[0]).cast(pl.Int32).alias('xBin'),
+                                       pl.col('Y').floordiv(cellSize[1]).cast(pl.Int32).alias('yBin'),
+                                       pl.col('Z').floordiv(cellSize[2]).cast(pl.Int32).alias('zBin'))
 
     if binExtents is None:
         binMin = points_df[:, -3:].min().to_numpy().flatten()
@@ -171,13 +172,13 @@ def is_noise_ivf(pulses,voxelSize=1,windowSize=3,minPointCount=200):
     import polars as pl
     import numpy as np
     try:
-        points_df = pl.DataFrame({'x': pulses.xyz[:, 0], 'y': pulses.xyz[:, 1], 'z': pulses.xyz[:, 2]})
+        points_df = pl.DataFrame({'X': pulses.xyz[:, 0], 'Y': pulses.xyz[:, 1], 'Z': pulses.xyz[:, 2]})
     except:
-        points_df = pl.DataFrame({'x': pulses[:, 0], 'y': pulses[:, 1], 'z': pulses[:, 2]})
+        points_df = pl.DataFrame({'X': pulses[:, 0], 'Y': pulses[:, 1], 'Z': pulses[:, 2]})
 
-    points_df = points_df.with_columns(pl.col('x').floordiv(voxelSize).cast(pl.Int32).alias('xBin'),
-                                       pl.col('y').floordiv(voxelSize).cast(pl.Int32).alias('yBin'),
-                                       pl.col('z').floordiv(voxelSize).cast(pl.Int32).alias('zBin'))
+    points_df = points_df.with_columns(pl.col('X').floordiv(voxelSize).cast(pl.Int32).alias('xBin'),
+                                       pl.col('Y').floordiv(voxelSize).cast(pl.Int32).alias('yBin'),
+                                       pl.col('Z').floordiv(voxelSize).cast(pl.Int32).alias('zBin'))
 
     # Get count of returns in voxels
     df = bin3D(pulses,function=pl.len(),cellSize=voxelSize,asArray=False)
@@ -203,17 +204,17 @@ def normalize(xyz_df,dem_df,cellSize=None):
     if cellSize is None:
         cellSize = dem_df[1,0]-dem_df[0,0]
 
-    dem_df = dem_df.rename({'z':'z_dem'})
+    dem_df = dem_df.rename({'Z':'z_dem'})
     dem_df = dem_df.drop_nulls()
 
-    xyz_df = xyz_df.with_columns(pl.col('x').floordiv(cellSize).cast(pl.Int32).alias('xBinDEM'),
-                                 pl.col('y').floordiv(cellSize).cast(pl.Int32).alias('yBinDEM'))
-    dem_df = dem_df.with_columns(pl.col('x').floordiv(cellSize).cast(pl.Int32).alias('xBinDEM'),
-                                 pl.col('y').floordiv(cellSize).cast(pl.Int32).alias('yBinDEM'))
+    xyz_df = xyz_df.with_columns(pl.col('X').floordiv(cellSize).cast(pl.Int32).alias('xBinDEM'),
+                                 pl.col('Y').floordiv(cellSize).cast(pl.Int32).alias('yBinDEM'))
+    dem_df = dem_df.with_columns(pl.col('X').floordiv(cellSize).cast(pl.Int32).alias('xBinDEM'),
+                                 pl.col('Y').floordiv(cellSize).cast(pl.Int32).alias('yBinDEM'))
     xyz_df = xyz_df.join(dem_df,on=['xBinDEM','yBinDEM'],how='left')
-    xyz_df = xyz_df.with_columns(pl.col('z').sub(pl.col('z_dem')).alias('z'))
+    xyz_df = xyz_df.with_columns(pl.col('Z').sub(pl.col('z_dem')).alias('Z'))
     xyz_df = xyz_df.drop(['z_dem','xBinDEM','yBinDEM'])
-    xyz_df = xyz_df.filter((pl.col('z').is_not_nan()) & (pl.col('z').is_not_null()))
+    xyz_df = xyz_df.filter((pl.col('Z').is_not_nan()) & (pl.col('Z').is_not_null()))
     return xyz_df
 
 
@@ -223,30 +224,30 @@ def plot_side_view(xyz,direction=0,demPtsNormalize=None,returnData=False):
     import numpy as np
     import matplotlib.pyplot as plt
 
-    points_df = pl.DataFrame({'x': xyz[:, 0], 'y': xyz[:, 1], 'z': xyz[:, 2]})
+    points_df = pl.DataFrame({'X': xyz[:, 0], 'Y': xyz[:, 1], 'Z': xyz[:, 2]})
     if demPtsNormalize is not None:
         points_df = normalize(points_df,demPtsNormalize)
-        points_df = points_df.filter(pl.col('z')>=0)
+        points_df = points_df.filter(pl.col('Z')>=0)
 
-    mincoords = points_df.select(['x', 'y', 'z']).min().to_numpy().flatten()
-    maxcoords = points_df.select(['x', 'y', 'z']).max().to_numpy().flatten()
+    mincoords = points_df.select(['X', 'Y', 'Z']).min().to_numpy().flatten()
+    maxcoords = points_df.select(['X', 'Y', 'Z']).max().to_numpy().flatten()
 
     extents3D = np.concatenate([mincoords,maxcoords])
 
     if direction == 0:
-        bins = bin3D(points_df, function=pl.min('y'), cellSize=.1, asArray=True)
+        bins = bin3D(points_df, function=pl.min('Y'), cellSize=.1, asArray=True)
         bins = np.nanmin(bins,axis=1)
         extents2D = extents3D[[0,3,2,5]]
     elif direction == 1:
-        bins = bin3D(points_df, function=pl.min('x'), cellSize=.1, asArray=True)
+        bins = bin3D(points_df, function=pl.min('X'), cellSize=.1, asArray=True)
         bins = np.nanmin(bins, axis=0)
         extents2D = extents3D[[1, 4, 2, 5]]
     elif direction == 2:
-        bins = bin3D(points_df, function=pl.max('y'), cellSize=.1, asArray=True)
+        bins = bin3D(points_df, function=pl.max('Y'), cellSize=.1, asArray=True)
         bins = np.nanmax(bins, axis=1)
         extents2D = extents3D[[0, 3, 2, 5]]
     else:
-        bins = bin3D(points_df, function=pl.max('x'), cellSize=.1, asArray=True)
+        bins = bin3D(points_df, function=pl.max('X'), cellSize=.1, asArray=True)
         bins = np.nanmax(bins, axis=0)
         extents2D = extents3D[[1, 4, 2, 5]]
 
@@ -256,75 +257,25 @@ def plot_side_view(xyz,direction=0,demPtsNormalize=None,returnData=False):
         return plt.imshow(np.rot90(bins),extent=extents2D)
 
 
-def summarize_profiles(profiles, bin_height=.1, min_height=1., fsg_threshold=.011, cbd_col='cbd_pred',
-                       height_col='height', pad_col='pad', occlusion_col='occluded', plot_id_col='Plot_ID'):
-    profiles_filter_h = profiles[profiles[height_col] >= min_height]
-    summary = profiles_filter_h.pivot_table(index=plot_id_col,
-                                            aggfunc={cbd_col: 'sum', pad_col: 'sum', occlusion_col: 'mean'}
-                                            ).reset_index()
+def summarize_profiles(profiles, plot_id_col='PLT_CN', height_col='HT',
+                       cbd_col='CBD', pad_col = 'PAD',
+                       min_height=1., fsg_threshold=.011, ):
+    bin_height = profiles[height_col].iloc[1] - profiles[height_col].iloc[0]
 
-    summary.columns = [plot_id_col, 'cfl', 'occlusion', 'plant_area']
-    summary['cfl'] *= bin_height
-    summary['plant_area'] *= bin_height
-    summary['fsg'] = 0.
-    summary['fsg_h1'] = float(min_height)
-    summary['fsg_h2'] = float(min_height)
-    summary['canopy_height'] = 0.
-    summary['canopy_ratio'] = 0.
-    summary.insert(1, 'cbd_max', 0.)
+    lai = profiles.groupby(plot_id_col).agg({pad_col: 'sum'})[pad_col] * bin_height
+    lai.name = 'LAI'
 
-    cbd_window_size_bins = int(3.96 / bin_height)  # 3.96m is the 13-foot running mean used in FVS-FFE
+    profiles = profiles[profiles[height_col] >= min_height]
+    profiles_pivot = profiles.pivot(index=plot_id_col, columns=height_col, values=cbd_col).reset_index().fillna(0)
+    cbd_arr = profiles_pivot.iloc[:, 1:].to_numpy()
+    heights = np.array(profiles_pivot.columns[1:], float)
 
-    for plot_id in profiles[plot_id_col].unique():
-        profile = profiles[profiles[plot_id_col] == plot_id]
-        profile = profile.sort_values(by=height_col)
-        profile = profile[[height_col, cbd_col]].to_numpy()
-        heights = np.arange(profile[:, 0].min(), profile[:, 0].max() + bin_height, bin_height)
-        cbd = np.interp(heights, profile[:, 0], profile[:, 1])
-        cbd_smooth = smooth_w_running_avg(cbd, cbd_window_size_bins)
+    cbd_metrics = pd.DataFrame(summarize_profiles_from_plot_arr(cbd_arr, heights, fsg_threshold=fsg_threshold)).T
+    cbd_metrics.columns = ['CBD', 'CFL', 'FSG_H1', 'FSG_H2', 'FSG', 'CH', 'CR']
+    cbd_metrics.insert(0, plot_id_col, profiles_pivot[plot_id_col].values)
+    cbd_metrics.join(lai,on=plot_id_col)
 
-        # Calculate FSG
-        if cbd_smooth[0] < fsg_threshold:
-            # If profile starts "empty", get lowest height where profile is "filled"
-            fsg_h1 = 0
-            filled_mask = cbd_smooth >= fsg_threshold
-            if filled_mask.sum() > 0:
-                fsg_h2 = np.min(heights[filled_mask])
-            else:
-                fsg_h2 = 0
-        else:
-            # If profile starts "filled", get lowest height where profile is "empty"
-            if np.sum(cbd_smooth < fsg_threshold) > 0:
-                fsg_h1 = np.min(heights[cbd_smooth < fsg_threshold])
-                # Remove values below fsg_h1
-                heights_clip = heights[heights >= fsg_h1]
-                cbd_clip = cbd[heights >= fsg_h1]
-                # Get lowest height where profile is "filled"
-                filled_mask = cbd_clip >= fsg_threshold
-                if filled_mask.sum() > 0:
-                    fsg_h2 = np.min(heights_clip[filled_mask])
-                else:
-                    fsg_h2 = fsg_h1
-            else:
-                # Profile is all "filled"
-                fsg_h1 = heights[-1]
-                fsg_h2 = fsg_h1
-
-        summary.loc[summary[plot_id_col] == plot_id, 'fsg_h1'] = fsg_h1
-        summary.loc[summary[plot_id_col] == plot_id, 'fsg_h2'] = fsg_h2
-        summary.loc[summary[plot_id_col] == plot_id, 'fsg'] = fsg_h2 - fsg_h1
-
-        # Calculate effective canopy bulk density
-        cbd_max = cbd_smooth.max()
-        summary.loc[summary[plot_id_col] == plot_id, 'cbd_max'] = cbd_max
-
-        # Calculate canopy height and ratio
-        ch = profile[profile[:, 1] > 0][:, 0].max()  # Max height where val>0
-        cr = (ch - fsg_h2) / ch
-        summary.loc[summary[plot_id_col] == plot_id, 'canopy_height'] = ch
-        summary.loc[summary[plot_id_col] == plot_id, 'canopy_ratio'] = cr
-
-    return summary
+    return cbd_metrics
 
 
 def summarize_profiles_from_grid(cbd_arr, z_coords, interpolated_resolution=.1, fsg_threshold=.011):
@@ -787,10 +738,10 @@ def interpolate_flightpath(points, flightpath):
     return np.stack([x,y,z],1)
 
 def _default_folder_setup(export_folder,
-                          pad_dir=True,
+                          pad_grid_dir=True,
                           dem_dir=True,
                           points_dir=True,
-                          pad_summary_dir=True,
+                          pad_profile_dir=True,
                           plot_summary_dir=True):
     from pathlib import Path
     import os
@@ -801,10 +752,10 @@ def _default_folder_setup(export_folder,
         os.mkdir(Path(export_folder).joinpath('DEM'))
     if points_dir and not Path(export_folder).joinpath('Points').exists():
         os.mkdir(Path(export_folder).joinpath('Points'))
-    if pad_dir and not Path(export_folder).joinpath('PAD').exists():
-        os.mkdir(Path(export_folder).joinpath('PAD'))
-    if pad_summary_dir and not Path(export_folder).joinpath('PAD_Summary').exists():
-        os.mkdir(Path(export_folder).joinpath('PAD_Summary'))
+    if pad_grid_dir and not Path(export_folder).joinpath('PAD_Grid').exists():
+        os.mkdir(Path(export_folder).joinpath('PAD_Grid'))
+    if pad_profile_dir and not Path(export_folder).joinpath('PAD_Profile').exists():
+        os.mkdir(Path(export_folder).joinpath('PAD_Profile'))
     if plot_summary_dir and not Path(export_folder).joinpath('Plot_Summary').exists():
         os.mkdir(Path(export_folder).joinpath('Plot_Summary'))
 
@@ -816,9 +767,9 @@ def _default_postprocessing(grid, plot_name,
                             fill_occlusion=False,
                             min_pad_foliage=.01,
                             max_pad_foliage=6,
-                            export_grid=True,
+                            export_pad_grid=True,
                             export_dem=True,
-                            export_pad_summary=True,
+                            export_pad_profile=True,
                             export_plot_summary=True
                             )->Tuple['pd.DataFrame','pd.DataFrame']:
     import os
@@ -830,16 +781,17 @@ def _default_postprocessing(grid, plot_name,
     grid.gaussian_filter_PAD(sigma=sigma1)
     grid.classify_foliage_with_PAD(max_occlusion=max_occlusion, min_pad_foliage=min_pad_foliage, max_pad_foliage=max_pad_foliage)
     profile = grid.summarize_by_height(clip_radius=plot_radius)
+    profile = profile.insert(0, 'PLT_CN', plot_name)
     summary = grid.calculate_dem_metrics(clip_radius=plot_radius)
-    summary['canopy_cover'] = grid.calculate_canopy_cover(clip_radius=plot_radius)
-    summary['plot_id'] = plot_name
+    summary['CANOPY_COVER'] = grid.calculate_canopy_cover(clip_radius=plot_radius)
+    summary['PLT_CN'] = plot_name
     summary = pd.DataFrame(summary, index=[0])
-    if export_grid:
-        grid.export_grid_as_csv(os.path.join(export_folder, 'PAD/', plot_name) + '.csv')
+    if export_pad_grid:
+        grid.export_grid_as_csv(os.path.join(export_folder, 'PAD_Grid/', plot_name) + '.csv')
     if export_dem:
         grid.export_dem_as_csv(os.path.join(export_folder, 'DEM/', plot_name) + '.csv')
-    if export_pad_summary:
-        profile.write_csv(os.path.join(export_folder, 'PAD_Summary/', plot_name) + '.csv')
+    if export_pad_profile:
+        profile.write_csv(os.path.join(export_folder, 'PAD_Profile/', plot_name) + '.csv')
     if export_plot_summary:
         summary.to_csv(os.path.join(export_folder, 'Plot_Summary/', plot_name) + '.csv', index=False)
     profile = profile.to_pandas()
@@ -994,7 +946,7 @@ def visualize_voxels(grid:'pl.DataFrame',
                      dem:'pl.DataFrame',
                      points:'pl.DataFrame'=None,
                      clip_extents='auto',
-                     value_name:str='pad',
+                     value_name:str='PAD',
                      min_value_leaf:float=0.2,
                      max_value_leaf:float=6,
                      min_hag:float=0.1,
@@ -1005,7 +957,7 @@ def visualize_voxels(grid:'pl.DataFrame',
     Args:
 
         grid (pl.DataFrame): Polars DataFrame containing voxel grid (one row for each voxel. Columns must
-            include 'x', 'y', 'z', 'classification', 'hag' and value_name (default='pad')
+            include 'X', 'Y', 'Z', 'CLASSIFICATION', 'HAG' and value_name (default='PAD')
 
         dem (pl.DataFrame): Polars DataFrame containing DEM in point format (row for each cell, columns xyz).
 
@@ -1014,13 +966,13 @@ def visualize_voxels(grid:'pl.DataFrame',
             [xmin, ymin, zmin, xmax, ymax, zmax]. Defaults to 'auto'.
 
         value_name (str): Name of the voxel attribute used for scalar coloring.
-            Defaults to 'pad'.
+            Defaults to 'PAD'.
 
         min_value_leaf (float): Voxels with value below this threshold are considered "empty", not rendered.
 
         max_value_leaf (float): Voxels with value below this threshold are considered "leaves" and rendered along the
             yellow-green color scale. Voxels with value above this threshold are considered "non-foliage" and rendered in
-            brown. Recommended value to visualize 'pad' from the BLK360 is 6. Recommended value to visualize 'pad' from
+            brown. Recommended value to visualize 'PAD' from the BLK360 is 6. Recommended value to visualize 'PAD' from
             ALS is 1.
 
         min_hag (float): Minimum height above ground for voxels to be rendered. Defaults to 0.1, consider 1.0 for ALS.
@@ -1034,7 +986,7 @@ def visualize_voxels(grid:'pl.DataFrame',
     import polars as pl
 
     grid.columns = [col.lower() for col in grid.columns]
-    grid = grid.select(['x','y','z','hag','classification',value_name])
+    grid = grid.select(['X','Y','Z','HAG','CLASSIFICATION',value_name])
     cell_size = round(grid[1, 0] - grid[0, 0], 5)
 
     # Determine extents
@@ -1064,7 +1016,7 @@ def visualize_voxels(grid:'pl.DataFrame',
 
     # Load and clip DEM
     dem.columns = [col.lower() for col in dem.columns]
-    dem = dem.select(['x','y','z'])
+    dem = dem.select(['X','Y','Z'])
     dem = dem.filter(
         (dem[:, 0] >= extents[0]) & (dem[:, 0] <= extents[3]) &
         (dem[:, 1] >= extents[1]) & (dem[:, 1] <= extents[4])
@@ -1076,9 +1028,9 @@ def visualize_voxels(grid:'pl.DataFrame',
         center = dem.mean(axis=0)
         dem -= center
         grid = grid.with_columns([
-            pl.col('x') - center[0],
-            pl.col('y') - center[1],
-            pl.col('z') - center[2]
+            pl.col('X') - center[0],
+            pl.col('Y') - center[1],
+            pl.col('Z') - center[2]
         ])
     else:
         center = None
@@ -1090,7 +1042,7 @@ def visualize_voxels(grid:'pl.DataFrame',
 
     if show_points:
         points.columns = [col.lower() for col in points.columns]
-        points = points.select(['x','y','z'])
+        points = points.select(['X','Y','Z'])
         points = points.filter(
             (points[:, 0] >= extents[0]) & (points[:, 0] <= extents[3]) &
             (points[:, 1] >= extents[1]) & (points[:, 1] <= extents[4]) &
@@ -1110,15 +1062,15 @@ def visualize_voxels(grid:'pl.DataFrame',
     ).texture_map_to_plane()
 
     # Classification masks
-    leaf_mask = ((pl.col('classification') > 0) &
-                 (pl.col('hag') >= min_hag) &
+    leaf_mask = ((pl.col('CLASSIFICATION') > 0) &
+                 (pl.col('HAG') >= min_hag) &
                  (pl.col(value_name) >= min_value_leaf) &
                  (pl.col(value_name) <= max_value_leaf))
-    wood_mask = ((pl.col('classification') > 0) &
-                 (pl.col('hag') >= min_hag) &
+    wood_mask = ((pl.col('CLASSIFICATION') > 0) &
+                 (pl.col('HAG') >= min_hag) &
                  (pl.col(value_name) > max_value_leaf)
                  )
-    occluded_mask = (pl.col('classification') == -1)
+    occluded_mask = (pl.col('CLASSIFICATION') == -1)
 
     base_cube = pv.Cube(center=(0, 0, 0), x_length=cell_size, y_length=cell_size, z_length=cell_size)
     filled_pts = pv.PolyData(grid.filter(leaf_mask)[:, :3].to_numpy())

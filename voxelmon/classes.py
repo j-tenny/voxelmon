@@ -57,25 +57,25 @@ class Grid:
         df = pd.read_csv(pad_filepath,index_col=[0,1,2])
         ds = xr.Dataset.from_dataframe(df)
         #centers = df.reset_index().iloc[:,:3].to_numpy()
-        cell_size = float(ds.coords['x'][1]-ds.coords['x'][0])
+        cell_size = float(ds.coords['X'][1]-ds.coords['X'][0])
         extents_min = np.stack([v.values.min() for v in ds.coords.values()]) - cell_size/2
         extents_max = np.stack([v.values.max() for v in ds.coords.values()]) + cell_size/2
         #extents_min = centers.min(axis=0) - cell_size/2
         #extents_max = centers.max(axis=0) + cell_size/2
         grid = cls(extents=np.concatenate([extents_min,extents_max]), cell_size=cell_size)
 
-        grid.p_directed = ds['pDirected'].to_numpy()
-        grid.p_transmitted = ds['pTransmitted'].to_numpy()
-        grid.p_intercepted = ds['pIntercepted'].to_numpy()
-        grid.classification = ds['classification'].to_numpy()
-        grid.occlusion = ds['occlusion'].to_numpy()
-        grid.pad = ds['pad'].to_numpy()
-        grid.hag = ds['hag'].to_numpy()
+        grid.p_directed = ds['P_DIRECTED'].to_numpy()
+        grid.p_transmitted = ds['P_TRANSMITTED'].to_numpy()
+        grid.p_intercepted = ds['P_INTERCEPTED'].to_numpy()
+        grid.classification = ds['CLASSIFICATION'].to_numpy()
+        grid.occlusion = ds['OCCLUSION'].to_numpy()
+        grid.pad = ds['PAD'].to_numpy()
+        grid.hag = ds['HAG'].to_numpy()
 
         df = pd.read_csv(dem_filepath, index_col=[0, 1])
         ds = xr.Dataset.from_dataframe(df)
 
-        grid.dem = ds['z'].to_numpy()
+        grid.dem = ds['Z'].to_numpy()
 
         return grid
 
@@ -109,7 +109,7 @@ class Grid:
     def calculate_eigenvalues(self,points) -> None:
         """Calculate the eigenvalues of points within each grid cell. Needs review."""
         pointBins = (points // self.cell_size).astype(np.int32)
-        #sortedIndices = pointBins.view([('x', np.float64), ('y', np.float64), ('z', np.float64)]).argsort(axis=0,order=['z','y','x']).flatten()
+        #sortedIndices = pointBins.view([('X', np.float64), ('Y', np.float64), ('Z', np.float64)]).argsort(axis=0,order=['Z','Y','X']).flatten()
         #pointBins = pointBins[sortedIndices]
         #points = points[sortedIndices]
         occupiedBins, pointCount = np.unique(pointBins,axis=0,return_counts=True)
@@ -358,15 +358,15 @@ class Grid:
             points = pulses[:,0:3]
 
         # Get lowest point in base grid
-        grid = self.bin2D(points,pl.min('z'))
+        grid = self.bin2D(points,pl.min('Z'))
         grid[np.isnan(grid)]=99
         centers = self.centers_xy
         # Create a grid of coordinates corresponding to the array indices
         x, y = np.indices(grid.shape)
 
-        points = pl.DataFrame({'x':points[:,0],'y':points[:,1],'z':points[:,2],'ground':-2})
-        points = points.with_columns(pl.col('x').floordiv(self.cell_size).cast(pl.Int32).alias('xBin'),
-                                     pl.col('y').floordiv(self.cell_size).cast(pl.Int32).alias('yBin'))
+        points = pl.DataFrame({'X':points[:,0],'Y':points[:,1],'Z':points[:,2],'ground':-2})
+        points = points.with_columns(pl.col('X').floordiv(self.cell_size).cast(pl.Int32).alias('xBin'),
+                                     pl.col('Y').floordiv(self.cell_size).cast(pl.Int32).alias('yBin'))
 
         # Get lowest point in decreasing windows
         for windowSize,heightThresh in zip(window_sizes, height_thresholds):
@@ -390,8 +390,8 @@ class Grid:
             points = points.drop('ground').join(dem_df,['xBin','yBin'],'left')
 
             # Remove points that are not near the ground and recalculate lowest points
-            points = points.filter(pl.col('z') <= pl.col('ground').add(heightThresh))
-            grid = self.bin2D(points, pl.min('z'))
+            points = points.filter(pl.col('Z') <= pl.col('ground').add(heightThresh))
+            grid = self.bin2D(points, pl.min('Z'))
             grid[np.isnan(grid)] = 99
 
         # Interpolate remaining missing values
@@ -411,18 +411,18 @@ class Grid:
         import pandas as pd
         results = {}
 
-        dem_df = pd.DataFrame({'x': self.centers_xy[:, 0], 'y': self.centers_xy[:, 1], 'z':self.dem.flatten()})
+        dem_df = pd.DataFrame({'X': self.centers_xy[:, 0], 'Y': self.centers_xy[:, 1], 'Z':self.dem.flatten()})
 
         if clip_radius is not None:
             # Calculate horizontal distance from center
-            dem_df['HD'] = np.sqrt(dem_df['x'] ** 2 + dem_df['y'] ** 2)
+            dem_df['HD'] = np.sqrt(dem_df['X'] ** 2 + dem_df['Y'] ** 2)
             # Filter outside of plot radius
             dem_df = dem_df[dem_df['HD'] < clip_radius]
-        dem_df = dem_df[~np.isnan(dem_df['z'])]
+        dem_df = dem_df[~np.isnan(dem_df['Z'])]
         dem_df['intercept'] = 1
 
         # Fit a plane using linear regression
-        model = sm.OLS(dem_df['z'],dem_df[['intercept','x', 'y']]).fit()
+        model = sm.OLS(dem_df['Z'],dem_df[['intercept','X', 'Y']]).fit()
 
         # Extract coefficients
         intercept = model.params.iloc[0]
@@ -447,20 +447,20 @@ class Grid:
         dot_product_z = np.dot(normal_unit_vector, z_axis_vector)
 
         # Assign angles to data
-        results['terrain_slope'] = np.degrees(np.arccos(dot_product_z))
+        results['TERRAIN_SLOPE'] = np.degrees(np.arccos(dot_product_z))
         terrain_aspect = np.degrees(np.arctan2(normal_unit_vector[0], normal_unit_vector[1]))
         if terrain_aspect < 0:
             terrain_aspect += 360
-        results['terrain_aspect'] = terrain_aspect
+        results['TERRAIN_ASPECT'] = terrain_aspect
 
         # Calculate terrain shape metrics
-        dem_df['resid'] = dem_df['z'] - model.predict(dem_df[['intercept', 'x', 'y']])
-        results['terrain_roughness'] = np.sqrt(np.mean(dem_df['resid'] ** 2))
+        dem_df['resid'] = dem_df['Z'] - model.predict(dem_df[['intercept', 'X', 'Y']])
+        results['TERRAIN_ROUGHNESS'] = np.sqrt(np.mean(dem_df['resid'] ** 2))
         if clip_radius is not None:
             hd_half = clip_radius / 2
             sum_inner = dem_df[dem_df['HD'] < hd_half]['resid'].sum()
             sum_outer = dem_df[dem_df['HD'] >= hd_half]['resid'].sum()
-            results['terrain_concavity'] = sum_inner - sum_outer
+            results['TERRAIN_CONCAVITY'] = sum_inner - sum_outer
 
         return results
 
@@ -476,22 +476,22 @@ class Grid:
 
         """
         import polars as pl
-        df = self.to_polars().select(['x','y','hag','pad','occlusion'])
-        df = df.filter(pl.col('hag').ge(cutoff_height))
+        df = self.to_polars().select(['X','Y','HAG','PAD','OCCLUSION'])
+        df = df.filter(pl.col('HAG').ge(cutoff_height))
         if clip_radius is not None:
-            df = df.filter(((pl.col('x')**2 + pl.col('y')**2)**.5).le(clip_radius))
-        df = df.group_by((pl.col('x') / self.cell_size).cast(int), (pl.col('y') / self.cell_size).cast(int)) \
-               .agg([(pl.col("pad") >= 0.05).sum().alias('filled'),
-                     pl.col("occlusion").mean().alias("occlusion")])
-        total_cells = df.filter(pl.col('filled').gt(0) | pl.col('occlusion').le(max_occlusion)).shape[0]
-        filled_cells = df.filter(pl.col('filled').gt(0)).shape[0]
+            df = df.filter(((pl.col('X')**2 + pl.col('Y')**2)**.5).le(clip_radius))
+        df = df.group_by((pl.col('X') / self.cell_size).cast(int), (pl.col('Y') / self.cell_size).cast(int)) \
+               .agg([(pl.col('PAD') >= 0.05).sum().alias('FILLED'),
+                     pl.col('OCCLUSION').mean().alias('OCCLUSION')])
+        total_cells = df.filter(pl.col('FILLED').gt(0) | pl.col('OCCLUSION').le(max_occlusion)).shape[0]
+        filled_cells = df.filter(pl.col('FILLED').gt(0)).shape[0]
         return filled_cells / total_cells
 
     def classify_foliage_with_PAD(self, max_occlusion:float=.8, min_pad_foliage=.05, max_pad_foliage=6) -> None:
         """Classify voxels based on PAD thresholds and occlusion value.
 
         Sets self.classification and self.classification_key.
-        Key: {-2: 'empty', -1: 'occluded', 3: 'foliage', 5: 'nonfoliage'}
+        Key: {-2: 'EMPTY', -1: 'OCCLUDED', 3: 'FOLIAGE', 5: 'NONFOLIAGE'}
 
         Args:
             max_occlusion: if occlusion is greater than this value, classify as occluded
@@ -503,7 +503,7 @@ class Grid:
         self.classification[self.pad<0] = -1
         self.classification[self.pad >= min_pad_foliage] = 3
         self.classification[self.pad > max_pad_foliage] = 5
-        self.classification_key = {-2: 'empty', -1: 'occluded', 3: 'foliage', 5: 'nonfoliage'}
+        self.classification_key = {-2: 'EMPTY', -1: 'OCCLUDED', 3: 'FOLIAGE', 5: 'NONFOLIAGE'}
 
     def interpolate_occlusion_idw(self,max_occlusion=.8,max_pad_foliage=6,min_height=1,k=8):
         from scipy.spatial import cKDTree
@@ -544,15 +544,15 @@ class Grid:
     def bin2D(self,pulses,function)->'pl.DataFrame':
         """Aggregate values from pulses to 2D grid
 
-        Function should be from polars and should specify a column name x, y, or z, e.g. pl.min('z')"""
+        Function should be from polars and should specify a column name X, Y, or Z, e.g. pl.min('Z')"""
         import polars as pl
         try:
-            points_df = pl.DataFrame({'x':pulses.xyz[:,0],'y':pulses.xyz[:,1],'z':pulses.xyz[:,2]})
+            points_df = pl.DataFrame({'X':pulses.xyz[:,0],'Y':pulses.xyz[:,1],'Z':pulses.xyz[:,2]})
         except:
-            points_df = pl.DataFrame({'x':pulses[:,0],'y':pulses[:,1],'z':pulses[:,2]})
+            points_df = pl.DataFrame({'X':pulses[:,0],'Y':pulses[:,1],'Z':pulses[:,2]})
 
-        points_df = points_df.with_columns(pl.col('x').floordiv(self.cell_size).cast(pl.Int32).alias('xBin'),
-                                           pl.col('y').floordiv(self.cell_size).cast(pl.Int32).alias('yBin'))
+        points_df = points_df.with_columns(pl.col('X').floordiv(self.cell_size).cast(pl.Int32).alias('xBin'),
+                                           pl.col('Y').floordiv(self.cell_size).cast(pl.Int32).alias('yBin'))
 
         bins_df = pl.DataFrame({'xBin': (self.centers_xy[:, 0] // self.cell_size).astype(np.int32),
                                 'yBin': (self.centers_xy[:, 1] // self.cell_size).astype(np.int32)})
@@ -564,12 +564,12 @@ class Grid:
     def to_polars(self)->'pl.DataFrame':
         """Convert grid to polars dataframe"""
         import polars
-        df = polars.DataFrame({'x': self.centers[:, 0], 'y': self.centers[:, 1], 'z': self.centers[:, 2], 'hag':self.hag.flatten('F'),
-                                'pDirected': self.p_directed.flatten('F'), 'pTransmitted': self.p_transmitted.flatten('F'),
-                                'pIntercepted': self.p_intercepted.flatten('F'), 'occlusion': self.occlusion.flatten('F'),
-                                'pad': self.pad.flatten('F'), #'linearity': self.geometric_features[:, 0],
+        df = polars.DataFrame({'X': self.centers[:, 0], 'Y': self.centers[:, 1], 'Z': self.centers[:, 2], 'HAG':self.hag.flatten('F'),
+                                'P_DIRECTED': self.p_directed.flatten('F'), 'P_TRANSMITTED': self.p_transmitted.flatten('F'),
+                                'P_INTERCEPTED': self.p_intercepted.flatten('F'), 'OCCLUSION': self.occlusion.flatten('F'),
+                                'PAD': self.pad.flatten('F'), #'linearity': self.geometric_features[:, 0],
                                 #'planarity': self.geometric_features[:, 1], 'eigenentropy': self.geometric_features[:, 2],'verticality': self.geometric_features[:, 3],
-                                'classification':self.classification.flatten('F')})
+                                'CLASSIFICATION':self.classification.flatten('F')})
         return df
 
 
@@ -591,53 +591,53 @@ class Grid:
         df = self.to_polars()
 
         if clip_radius!=None:
-            df = df.filter(((pl.col('x')**2 + pl.col('y')**2)**.5) < clip_radius)
+            df = df.filter(((pl.col('X')**2 + pl.col('Y')**2)**.5) < clip_radius)
 
         # Filter bad height data
-        df = df.filter((pl.col('hag')>=0) & (pl.col('hag').is_not_nan()))
+        df = df.filter((pl.col('HAG')>=0) & (pl.col('HAG').is_not_nan()))
 
         # Assign height bins
-        df = df.with_columns(pl.col('hag').floordiv(self.cell_size).cast(pl.Int32).alias('heightBin'))
+        df = df.with_columns(pl.col('HAG').floordiv(self.cell_size).cast(pl.Int32).alias('HEIGHT_BIN'))
 
         # Count voxels by class and height bin
-        summary = df.pivot(on="classification", index="heightBin", values='classification', aggregate_function=pl.len())
+        summary = df.pivot(on='CLASSIFICATION', index='HEIGHT_BIN', values='CLASSIFICATION', aggregate_function=pl.len())
         summary = summary.fill_null(0)
 
         # Assign meaningful column names
-        summary.columns =['heightBin'] + [self.classification_key[int(col)] for col in summary.columns[1:]]
+        summary.columns =['HEIGHT_BIN'] + [self.classification_key[int(col)] for col in summary.columns[1:]]
 
-        if 'occluded' not in summary.columns:
-            summary = summary.with_columns(pl.lit(0.0).alias('occluded'))
+        if 'OCCLUDED' not in summary.columns:
+            summary = summary.with_columns(pl.lit(0.0).alias('OCCLUDED'))
 
         # Convert count to proportion of non-occluded volume
-        volNO = summary.drop(['heightBin','occluded']).sum_horizontal()
-        volTotal = summary.drop(['heightBin']).sum_horizontal()
-        pctOccluded = summary['occluded'] / volTotal
-        summary = summary.with_columns(summary.drop(['heightBin']) / volNO)
+        volNO = summary.drop(['HEIGHT_BIN','OCCLUDED']).sum_horizontal()
+        volTotal = summary.drop(['HEIGHT_BIN']).sum_horizontal()
+        pctOccluded = summary['OCCLUDED'] / volTotal
+        summary = summary.with_columns(summary.drop(['HEIGHT_BIN']) / volNO)
         summary = summary.with_columns(pctOccluded)
 
 
         # Get mean PAD within foliage and empty space, ignoring occluded areas and other classes
-        pad = df.filter(pl.col('classification').is_in(foliage_classes + [empty_class]))
-        pad = pad.group_by('heightBin').agg(pl.mean('pad')).sort('heightBin')
+        pad = df.filter(pl.col('CLASSIFICATION').is_in(foliage_classes + [empty_class]))
+        pad = pad.group_by('HEIGHT_BIN').agg(pl.mean('PAD')).sort('HEIGHT_BIN')
 
-        summary = summary.join(pad,on='heightBin',how='full',coalesce=True).sort('heightBin')
+        summary = summary.join(pad,on='HEIGHT_BIN',how='full',coalesce=True).sort('HEIGHT_BIN')
 
         # Clean up
-        summary = pl.DataFrame((summary['heightBin'].cast(pl.Float64) * (self.cell_size)).alias('height')).hstack(summary)
+        summary = pl.DataFrame((summary['HEIGHT_BIN'].cast(pl.Float64) * (self.cell_size)).alias('HT')).hstack(summary)
         summary = summary.fill_null(0).fill_nan(0)
 
         return summary
 
     def visualize_3d(self, points:'pl.DataFrame'=None,
                      clip_extents='auto',
-                     value_name: str = 'pad',
+                     value_name: str = 'PAD',
                      min_value_leaf: float = 0.2,
                      max_value_leaf: float = 6,
                      min_hag: float = 0.1,
                      recenter_elev: bool = False):
         import polars
-        dem = polars.DataFrame({'x': self.centers_xy[:, 0], 'y': self.centers_xy[:, 1], 'z':self.dem.flatten()})
+        dem = polars.DataFrame({'X': self.centers_xy[:, 0], 'Y': self.centers_xy[:, 1], 'Z':self.dem.flatten()})
         voxelmon.visualize_voxels(grid=self.to_polars(),
                                   dem=dem,
                                   points=points,
@@ -656,7 +656,7 @@ class Grid:
     def export_dem_as_csv(self,filepath):
         """Write terrain model to points-like csv file (compatible with CloudCompare)"""
         import polars
-        df = polars.DataFrame({'x': self.centers_xy[:, 0], 'y': self.centers_xy[:, 1], 'z':self.dem.flatten()})
+        df = polars.DataFrame({'X': self.centers_xy[:, 0], 'Y': self.centers_xy[:, 1], 'Z':self.dem.flatten()})
         df.write_csv(filepath)
 
 class Pulses:
@@ -956,17 +956,17 @@ class ALS:
                 return lad
             elif return_type == 'polars':
                 z, y, x = np.meshgrid(z_centers,y_centers,x_centers, indexing='ij')
-                return pl.DataFrame({'x':x.flatten(),'y': y.flatten(), 'z':z.flatten(),'pad':lad.flatten('F')})
+                return pl.DataFrame({'X':x.flatten(),'Y': y.flatten(), 'Z':z.flatten(),'PAD':lad.flatten('F')})
             elif return_type == 'xarray':
                 import xarray as xr
-                return xr.DataArray(lad,coords={'x':x_centers,'y':y_centers,'z':z_centers},dims=['x','y','z'],name='pad')
+                return xr.DataArray(lad,coords={'X':x_centers,'Y':y_centers,'Z':z_centers},dims=['X','Y','Z'],name='PAD')
             elif return_type == 'voxelmon':
                 import xarray as xr
                 if bin_size_xy != bin_size_z:
                     raise ValueError('bin_size_xy must be equal to bin_size_z for voxelmon.Grid')
-                ds = xr.DataArray(lad, coords={'x': x_centers, 'y': y_centers, 'z': z_centers},
-                                  dims=['x', 'y', 'x'], name='pad')
-                cell_size = float(ds.coords['x'][1] - ds.coords['x'][0])
+                ds = xr.DataArray(lad, coords={'X': x_centers, 'Y': y_centers, 'Z': z_centers},
+                                  dims=['X', 'Y', 'Z'], name='PAD')
+                cell_size = float(ds.coords['X'][1] - ds.coords['X'][0])
                 extents_min = np.stack([v.values.min() for v in ds.coords.values()]) - cell_size / 2
                 extents_max = np.stack([v.values.max() for v in ds.coords.values()]) + cell_size / 2
 
@@ -979,15 +979,15 @@ class ALS:
                 grid.occlusion = np.zeros_like(grid.p_intercepted)
                 grid.classify_foliage_with_PAD(max_occlusion=999,min_pad_foliage=0,max_pad_foliage=999)
 
-                grid.hag = bin3D(arr,pl.mean('z'),[bin_size_xy,bin_size_xy,bin_size_z],asArray=True)
+                grid.hag = bin3D(arr,pl.mean('Z'),[bin_size_xy,bin_size_xy,bin_size_z],asArray=True)
 
                 grid.dem = np.zeros_like(grid.p_intercepted)
 
                 return grid
         else:
             # Implement in 1D
-            points_df = pl.DataFrame({'z':arr[:,2]})
-            points_df = points_df.with_columns(pl.col('z').floordiv(bin_size_z).cast(pl.Int32).alias('zBin'))
+            points_df = pl.DataFrame({'Z':arr[:,2]})
+            points_df = points_df.with_columns(pl.col('Z').floordiv(bin_size_z).cast(pl.Int32).alias('zBin'))
             counts = points_df.group_by('zBin').agg(pl.count())
             all_bins = pl.DataFrame({'zBin':np.arange(points_df['zBin'].min(), points_df['zBin'].max())})
             counts = all_bins.join(counts, 'zBin', 'left').sort('zBin')
@@ -1003,16 +1003,16 @@ class ALS:
             if return_type == 'numpy':
                 return lad
             elif return_type == 'polars':
-                return pl.DataFrame({'x': self.points['X'].mean(),
-                                     'y': self.points['Y'].mean(),
-                                     'z': counts[1:,0] * bin_size_z + bin_size_z / 2 + min_height,
-                                     'pad': lad})
+                return pl.DataFrame({'X': self.points['X'].mean(),
+                                     'Y': self.points['Y'].mean(),
+                                     'Z': counts[1:,0] * bin_size_z + bin_size_z / 2 + min_height,
+                                     'PAD': lad})
             elif return_type == 'xarray':
                 raise NotImplementedError('xarray return type not implemented for 1D')
             elif return_type == 'voxelmon':
                 raise ValueError('bin_size_xy must be equal to bin_size_z for voxelmon.Grid')
 
-    def execute_default_processing(self,export_folder:str,
+    def execute_default_processing(self, export_folder:str,
                                    plot_name:str,
                                    cell_size:float=1,
                                    extents:Union[Sequence[float],None] = None,
@@ -1020,14 +1020,14 @@ class ALS:
                                    sigma1=0,
                                    min_pad_foliage=.01,
                                    max_pad_foliage=6,
-                                   export_grid=True,
                                    export_dem=True,
-                                   export_pad_summary=True,
+                                   export_pad_grid=True,
+                                   export_pad_profile=True,
                                    export_plot_summary=True):
         from voxelmon.utils import _default_postprocessing, _default_folder_setup
 
-        _default_folder_setup(export_folder,pad_dir=export_grid,dem_dir=export_dem,points_dir=False,
-                              pad_summary_dir=export_pad_summary,plot_summary_dir=export_plot_summary)
+        _default_folder_setup(export_folder, pad_grid_dir=export_pad_grid, dem_dir=export_dem, points_dir=False,
+                              pad_profile_dir=export_pad_profile, plot_summary_dir=export_plot_summary)
 
         pulses = Pulses.from_point_cloud_array(self.points, origin=self.origin)
 
@@ -1047,10 +1047,10 @@ class ALS:
         profile, summary = _default_postprocessing(grid=grid, plot_name=plot_name, export_folder=export_folder,
                                                    plot_radius=None, max_occlusion=max_occlusion, fill_occlusion=True,
                                                    sigma1=sigma1, min_pad_foliage=min_pad_foliage, max_pad_foliage=max_pad_foliage,
-                                                   export_grid=export_grid, export_dem=export_dem,
-                                                   export_pad_summary=export_pad_summary, export_plot_summary=export_plot_summary)
+                                                   export_pad_grid=export_pad_grid, export_dem=export_dem,
+                                                   export_pad_profile=export_pad_profile, export_plot_summary=export_plot_summary)
 
-        return grid,   profile, summary
+        return grid, profile, summary
 
 
 class TLS_PTX:
@@ -1191,14 +1191,14 @@ class TLS_PTX:
 
     def to_pandas(self):
         import pandas as pd
-        df = pd.DataFrame({'x':self.xyz[:,0],'y':self.xyz[:,1],'z':self.xyz[:,2],'p':self.ptrh[:,0],'t':self.ptrh[:,1],
-                           'r':self.ptrh[:,2],'h':self.ptrh[:,3],'row':self.rowsCols[:,0],'col':self.rowsCols[:,1]})
+        df = pd.DataFrame({'X':self.xyz[:,0],'Y':self.xyz[:,1],'Z':self.xyz[:,2],'P':self.ptrh[:,0],'T':self.ptrh[:,1],
+                           'R':self.ptrh[:,2],'H':self.ptrh[:,3],'Row':self.rowsCols[:,0],'Col':self.rowsCols[:,1]})
         return df
 
     def to_polars(self):
         import polars
-        df = polars.DataFrame({'x':self.xyz[:,0],'y':self.xyz[:,1],'z':self.xyz[:,2],'p':self.ptrh[:,0],'t':self.ptrh[:,1],
-                                'r':self.ptrh[:,2],'h':self.ptrh[:,3],'row':self.rowsCols[:,0],'col':self.rowsCols[:,1]})
+        df = polars.DataFrame({'X':self.xyz[:,0],'Y':self.xyz[:,1],'Z':self.xyz[:,2],'P':self.ptrh[:,0],'T':self.ptrh[:,1],
+                                'R':self.ptrh[:,2],'H':self.ptrh[:,3],'Row':self.rowsCols[:,0],'Col':self.rowsCols[:,1]})
         return df
 
     def to_csv(self,filepath):
@@ -1636,7 +1636,7 @@ class BulkDensityProfileModelFitter:
             profile_data: Table containing estimates of CBD, species proportions, and lidar value
             species_cols: List of species group names. Each name must appear as separate column in table. Column values
                 must represent species proportion of CBD. Sum of species proportions must be equal to 1.
-            lidar_value_col: Name of column containing lidar values to be used in prediction (e.g. 'pad' or 'foliage')
+            lidar_value_col: Name of column containing lidar values to be used in prediction (e.g. 'PAD' or 'FOLIAGE')
             cbd_col: Name of column containing canopy bulk density values
             height_col: Name of column containing height labels. Heights must be in meters.
             plot_id_col: Name of column containing plot IDs. Plot IDs must separate individual profiles.
