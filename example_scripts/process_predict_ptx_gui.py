@@ -292,5 +292,5 @@ if __name__ == "__main__":
     stacked.setWindowTitle("Voxelmon Process PTX Predict Fire Behavior")
     stacked.resize(600, 500)
     stacked.show()
-    #sys.exit(app.exec_())
+    sys.exit(app.exec_())
 
