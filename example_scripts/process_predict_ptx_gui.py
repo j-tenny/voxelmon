@@ -139,7 +139,6 @@ def process(input_folder, export_folder, field_summary_path, canopy_model_path,
                                                                          sigma1=0, min_pad_foliage=.01,
                                                                          max_pad_foliage=6)
             profile['PLT_CN'] = base_file_name
-            profile['CANOPY_CLASS'] = field_summary.loc[base_file_name, 'CANOPY_CLASS']
             profile['CBD'] = canopy_model.predict(profile, lidar_value_col='PAD', height_col='HT', plot_id_col='PLT_CN')
 
             profile.to_csv(export_folder / 'PAD_Profile' / (base_file_name + '.csv'), index=False)

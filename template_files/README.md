@@ -2,19 +2,15 @@ This folder contains templates to facilate the process_predict_ptx scripts
 
 ## surface_fuel_summary
 
-This file describes surface fuel and metadata for each scan. The only required columns are EVENT_ID and SURFACE_CLASS.
+This file describes surface fuel and metadata for each scan. The only required columns are PLT_CN and SURFACE_CLASS.
 
-- EVENT_ID: unique key that matches the name of a ptx file (no extension)
+- PLT_CN: unique key that matches the name of a ptx file (no extension)
 - LATITUDE: geographic latitude
 - LONGITUDE: geographic longitude
-- CANOPY_CLASS: label applied to profile data. Could be used to specify a different LMA model for each scan.
 - SURFACE_CLASS: identifier for a surface fuel model from the Scott and Burgan 40 standard surface fuel models.
-- LOAD_LH: live herbaceous fuel load, kg/m^2
-- LOAD_LW: live woody fuel load, kg/m^2
-- LOAD_FDF: fine dead fuel load (1-hr fuel + available litter), kg/m^2
-- LOAD_10HR: 10-hr dead fuel load, kg/m^2
-- LOAD_100HR: 100-hr dead fuel load, kg/m^2
-- FUELBED_HT: Rothermel surface fuel depth, cm
+- SURFACE_BD_COEF: A multiplier applied to surface fuelbed bulk density. Defaults to 1. Values between 0.5 and 1 will typically result in higher rate of spread and flame length. Values greater than 1 will typically result in lower rate of spread and flame length. Values less than 0.5 or greater than 2.0 are not recommended.
+- SURFACE_LOAD_COEF: A multiplier applied to surface fuel load. Defaults to 1. Values between 0 and 1 will result in lower rate of spread and flame length. Values greater than 1 will result in higher rate of spread and flame length.
+
 
 ## canopy_lma_model
 

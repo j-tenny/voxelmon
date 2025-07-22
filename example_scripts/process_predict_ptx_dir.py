@@ -67,7 +67,6 @@ if process:
                                                                      plot_radius=plot_radius, max_height=max_grid_height, max_occlusion=max_occlusion,
                                                                      sigma1=0, min_pad_foliage=.01, max_pad_foliage=6)
         profile['PLT_CN'] = base_file_name
-        profile['CANOPY_CLASS'] = field_summary.loc[base_file_name, 'CANOPY_CLASS']
         profile['CBD'] = canopy_model.predict(profile, lidar_value_col='PAD', height_col='HT', plot_id_col='PLT_CN')
 
         profile.to_csv(export_folder / 'PAD_Profile' / (base_file_name + '.csv'), index=False)
