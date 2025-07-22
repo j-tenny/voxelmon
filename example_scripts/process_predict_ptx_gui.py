@@ -61,7 +61,7 @@ class ParameterForm(QWidget):
         add_spin_field("plot_radius", 11.3)
         add_spin_field("min_height", 0.2)
         add_spin_field("max_grid_height", 30)
-        add_spin_field("max_occlusion", 0.75)
+        add_spin_field("max_occlusion", 0.8)
 
         cbd_input = QLineEdit(); cbd_input.setPlaceholderText("Leave blank for None")
         self.fields["cbd_axis_limit"] = lambda: float(cbd_input.text()) if cbd_input.text() else None

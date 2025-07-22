@@ -35,7 +35,7 @@ generate_figures = True # Generate figures
 
 plot_radius = 11.3 # Distance from grid center to edge
 max_grid_height = 30 # Height of grid above coordinate [0,0,0] (height in meters of tallest expected tree)
-max_occlusion = .75 # Voxels with occulsion greater than this threshold are considered null
+max_occlusion = .8 # Voxels with occulsion greater than this threshold are considered null
 cell_size = .1 # Side-length of voxels
 min_height = 1 # Minimum height considered in CBD profiles
 
