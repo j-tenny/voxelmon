@@ -21,16 +21,16 @@ Fire behavior estimates require pyrothermel `pip install pyrothermel`
 Simple example to process plant area density for a single ptx file
 
 ## process_single_ptx_dir.py
-Process plant area density for all ptx files in a directory. It assumed each file is an independent plot location.
+Process plant area density for all ptx files in a directory. It is assumed each file is an independent plot location.
 
 ## train_test_multiple_scan_ptx.py
 Train and test a canopy bulk density profile model for multiple-scan lidar. Uses field data to produce calibrated 
-leaf-mass-per-area estimates as in Tenny et al 2025.
+leaf-mass-per-area estimates as in Tenny et al 2025. File and column identifiers will need significant updates.
 Requires pymc and scikit-learn libraries `conda install pymc scikit-learn`
 
 ## train_test_single_scan_ptx.py
 Train and test a canopy bulk density profile model for single-scan lidar. Uses field data to produce calibrated 
-leaf-mass-per-area estimates as in Tenny et al 2025.
+leaf-mass-per-area estimates as in Tenny et al 2025. File and column identifiers will need significant updates.
 
 ## viewer.py
 View processed plant area density grid in 3D

@@ -780,8 +780,8 @@ def _default_postprocessing(grid, plot_name,
     grid.filter_pad_noise_ivf()
     grid.gaussian_filter_PAD(sigma=sigma1)
     grid.classify_foliage_with_PAD(max_occlusion=max_occlusion, min_pad_foliage=min_pad_foliage, max_pad_foliage=max_pad_foliage)
-    profile = grid.summarize_by_height(clip_radius=plot_radius)
-    profile = profile.insert(0, 'PLT_CN', plot_name)
+    profile = grid.summarize_by_height(clip_radius=plot_radius).to_pandas()
+    profile.insert(0, 'PLT_CN', plot_name)
     summary = grid.calculate_dem_metrics(clip_radius=plot_radius)
     summary['CANOPY_COVER'] = grid.calculate_canopy_cover(clip_radius=plot_radius)
     summary['PLT_CN'] = plot_name
@@ -791,10 +791,10 @@ def _default_postprocessing(grid, plot_name,
     if export_dem:
         grid.export_dem_as_csv(os.path.join(export_folder, 'DEM/', plot_name) + '.csv')
     if export_pad_profile:
-        profile.write_csv(os.path.join(export_folder, 'PAD_Profile/', plot_name) + '.csv')
+        profile.to_csv(os.path.join(export_folder, 'PAD_Profile/', plot_name) + '.csv')
     if export_plot_summary:
         summary.to_csv(os.path.join(export_folder, 'Plot_Summary/', plot_name) + '.csv', index=False)
-    profile = profile.to_pandas()
+    profile = profile
     return profile,summary
 
 def estimate_foliage_from_treelist(treelist:pd.DataFrame,
@@ -1038,7 +1038,7 @@ def visualize_voxels(grid:'pl.DataFrame',
     import pyvista as pv
     import polars as pl
 
-    grid.columns = [col.lower() for col in grid.columns]
+    grid.columns = [col.upper() for col in grid.columns]
     grid = grid.select(['X','Y','Z','HAG','CLASSIFICATION',value_name])
     cell_size = round(grid[1, 0] - grid[0, 0], 5)
 
@@ -1068,7 +1068,7 @@ def visualize_voxels(grid:'pl.DataFrame',
     )
 
     # Load and clip DEM
-    dem.columns = [col.lower() for col in dem.columns]
+    dem.columns = [col.upper() for col in dem.columns]
     dem = dem.select(['X','Y','Z'])
     dem = dem.filter(
         (dem[:, 0] >= extents[0]) & (dem[:, 0] <= extents[3]) &
@@ -1094,7 +1094,7 @@ def visualize_voxels(grid:'pl.DataFrame',
         show_points=False
 
     if show_points:
-        points.columns = [col.lower() for col in points.columns]
+        points.columns = [col.upper() for col in points.columns]
         points = points.select(['X','Y','Z'])
         points = points.filter(
             (points[:, 0] >= extents[0]) & (points[:, 0] <= extents[3]) &

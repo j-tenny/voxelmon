@@ -487,7 +487,7 @@ class Grid:
         filled_cells = df.filter(pl.col('FILLED').gt(0)).shape[0]
         return filled_cells / total_cells
 
-    def classify_foliage_with_PAD(self, max_occlusion:float=.8, min_pad_foliage=.05, max_pad_foliage=6) -> None:
+    def classify_foliage_with_PAD(self, max_occlusion:float=.8, min_pad_foliage=.01, max_pad_foliage=6) -> None:
         """Classify voxels based on PAD thresholds and occlusion value.
 
         Sets self.classification and self.classification_key.
@@ -610,9 +610,9 @@ class Grid:
             summary = summary.with_columns(pl.lit(0.0).alias('OCCLUDED'))
 
         # Convert count to proportion of non-occluded volume
-        volNO = summary.drop(['HEIGHT_BIN','OCCLUDED']).sum_horizontal()
-        volTotal = summary.drop(['HEIGHT_BIN']).sum_horizontal()
-        pctOccluded = summary['OCCLUDED'] / volTotal
+        volNO = summary.drop(['HEIGHT_BIN','OCCLUDED']).sum_horizontal() #volume non-occluded
+        volTotal = summary.drop(['HEIGHT_BIN']).sum_horizontal() #total volume
+        pctOccluded = summary['OCCLUDED'] / volTotal #pct of volume occluded
         summary = summary.with_columns(summary.drop(['HEIGHT_BIN']) / volNO)
         summary = summary.with_columns(pctOccluded)
 
@@ -1023,7 +1023,80 @@ class ALS:
                                    export_dem=True,
                                    export_pad_grid=True,
                                    export_pad_profile=True,
-                                   export_plot_summary=True):
+                                   export_plot_summary=True)->Tuple[Grid,'pd.DataFrame']:
+        """Execute default processing pipeline for ALS data, processed with path tracing of individual pulses.
+
+        Args:
+            export_folder (str): Folder to export processed data.
+            plot_name (str): Unique identifier for plot/scan/file
+            cell_size (float): Uniform cell size of grid (meters).
+            extents (Union[Sequence[float],None]): Extents of grid (meters). If None, extents are calculated from min/max X/Y/Z values.
+            max_occlusion (float): Voxels with occlusion greater than this threshold are classified as occluded.
+            sigma1 (float): Value used in PAD smoothing function. Ignored if 0.
+            min_pad_foliage (float): Voxels with PAD greater than this threshold are classified as foliage.
+            max_pad_foliage (float): Voxels with PAD less than this threshold are classified as non-foliage.
+            export_pad_grid (bool): If True, export 3D grid to the export_folder.
+            export_pad_profile (bool): If True, export PAD profile to the export_folder.
+            export_plot_summary (bool): If True, export plot summary to the export_folder.
+
+        Returns: Grid (voxelmon.Grid), profile (pd.DataFrame), plot_summary (pd.DataFrame)
+
+        ## Standard Output Descriptions:
+
+        ### Grid (export_folder/PAD_Grid)
+        A table that contains a row for each 3D grid cell (ie voxel)
+
+        **Columns:**
+        - X: x coordinate for center of voxel
+        - Y: y coordinate for center of voxel
+        - Z: z coordinate for center of voxel
+        - HAG: height above ground for center of voxel, meters
+        - P_DIRECTED: total count of pulses directed towards this voxel (includes pulses that were intercepted before arrival)
+        - P_TRANSMITTED: count of pulses that were transmitted *through* this voxel
+        - P_INTERCEPTED: count of pulses that were intercepted *within* this voxel
+        - OCCLUSION: ratio of pulses intercepted *before* reaching this voxel `OCCLUSION = 1-(P_TRANSMITTED+P_INTERCEPTED)/P_DIRECTED`
+        - PAD: plant (leaf) area density, m^2/m^3. `PAD = -np.log(1 - (P_INTERCEPTED / (P_INTERCEPTED + P_TRANSMITTED))) / (G * MEAN_PATH_LENGTH)`
+        - CLASSIFICATION: value describing voxel classification according to `Grid.classification_key`
+
+        **Notes:**
+        - Input grid coordinates are assumed to be in meters. Otherwise, units will differ.
+        - Grid coordinates are calculated after applying transforms to the PTX file.
+        - G is assumed to be 0.5 and MEAN_PATH_LENGTH is assumed to be `0.843 * CELL_SIZE`, following [Grau et al 2017](https://doi.org/10.1016/j.rse.2017.01.032).
+        - Using the default processing and classification algorithms, the classification is based on thresholds of occlusion and PAD.
+          - If occlusion > max_occlusion, class = -1 (occluded/null)
+          - If PAD < 0, class = -1 (occluded/null)
+          - If PAD >= min_pad_foliage, class = 3 (foliage)
+          - If PAD > max_pad_foliage, class = 5 (non-foliage)
+          - Otherwise, class = -2 (empty)
+
+        ### Profile (export_folder/PAD_Profile)
+        A table that contains a row for each height bin. Voxels are summarized by height-above-ground.
+
+        **Columns:**
+        - PLT_CN: user-specified plot ID
+        - HT: height above ground, meters
+        - HEIGHT_BIN: unitless integer representing height above ground, used for table joins
+        - FOLIAGE: proportion of non-occluded voxels classified as foliage
+        - NONFOLIAGE: proportion of non-occluded voxels classified as non-foliage
+        - EMPTY: proportion of non-occluded voxels classified as empty
+        - OCCLUDED: proportion of voxels classified as occluded/null
+        - PAD: mean plant area density (m^2/m^3) for non-occluded voxels in this height bin
+
+        **Notes:**
+        - These columns represent the expected result following default classification and processing algorithms. For advanced use, see `Grid.summarize_by_height()`.
+        - Height above ground is estimated for the center of each voxel cell, then voxels are assigned to height bins using integer (floor) division: `HEIGHT_BIN = HAG // CELL_SIZE`.
+
+        ### Plot Summary (export_folder/Plot_Summary)
+        A table that contains a row for each plot ID (each file). Data are clipped to plot_radius, then summarized.
+
+        **Columns:**
+        - TERRAIN_SLOPE: mean terrain slope in degrees
+        - TERRAIN_ASPECT: mean terrain aspect in degrees relative to the y coordinate axis (relative to north if y-axis has been aligned to north).
+        - TERRAIN_ROUGHNESS: RMSE of elevation deviations from the de-trended DEM (meters).
+        - TERRAIN_CONCAVITY: Sum of elevation devations within half of the plot radius minus sum of elevation deviations beyond half of the plot radius (meters).
+        - CANOPY_COVER: Proportion of non-occluded plot area where canopy height > cutoff_height (default=2 meters), calculated via raster approach (see `Grid.calculate_canopy_cover`)
+        - PLT_CN: user-specified plot ID
+        """
         from voxelmon.utils import _default_postprocessing, _default_folder_setup
 
         _default_folder_setup(export_folder, pad_grid_dir=export_pad_grid, dem_dir=export_dem, points_dir=False,
@@ -1319,6 +1392,62 @@ class TLS_PTX:
 
         Returns: Grid (Grid), Profile (pd.DataFrame), Summary (pd.DataFrame)
 
+        ## Standard Output Descriptions:
+
+        ### Grid (export_folder/PAD_Grid)
+        A table that contains a row for each 3D grid cell (ie voxel)
+
+        **Columns:**
+        - X: x coordinate for center of voxel
+        - Y: y coordinate for center of voxel
+        - Z: z coordinate for center of voxel
+        - HAG: height above ground for center of voxel, meters
+        - P_DIRECTED: total count of pulses directed towards this voxel (includes pulses that were intercepted before arrival)
+        - P_TRANSMITTED: count of pulses that were transmitted *through* this voxel
+        - P_INTERCEPTED: count of pulses that were intercepted *within* this voxel
+        - OCCLUSION: ratio of pulses intercepted *before* reaching this voxel `OCCLUSION = 1-(P_TRANSMITTED+P_INTERCEPTED)/P_DIRECTED`
+        - PAD: plant (leaf) area density, m^2/m^3. `PAD = -np.log(1 - (P_INTERCEPTED / (P_INTERCEPTED + P_TRANSMITTED))) / (G * MEAN_PATH_LENGTH)`
+        - CLASSIFICATION: value describing voxel classification according to `Grid.classification_key`
+
+        **Notes:**
+        - Input grid coordinates are assumed to be in meters. Otherwise, units will differ.
+        - Grid coordinates are calculated after applying transforms to the PTX file.
+        - G is assumed to be 0.5 and MEAN_PATH_LENGTH is assumed to be `0.843 * CELL_SIZE`, following [Grau et al 2017](https://doi.org/10.1016/j.rse.2017.01.032).
+        - Using the default processing and classification algorithms, the classification is based on thresholds of occlusion and PAD.
+          - If occlusion > max_occlusion, class = -1 (occluded/null)
+          - If PAD < 0, class = -1 (occluded/null)
+          - If PAD >= min_pad_foliage, class = 3 (foliage)
+          - If PAD > max_pad_foliage, class = 5 (non-foliage)
+          - Otherwise, class = -2 (empty)
+
+        ### Profile (export_folder/PAD_Profile)
+        A table that contains a row for each height bin. Voxels are clipped to plot_radius, then summarized by height-above-ground.
+
+        **Columns:**
+        - PLT_CN: user-specified plot ID
+        - HT: height above ground, meters
+        - HEIGHT_BIN: unitless integer representing height above ground, used for table joins
+        - FOLIAGE: proportion of non-occluded voxels classified as foliage
+        - NONFOLIAGE: proportion of non-occluded voxels classified as non-foliage
+        - EMPTY: proportion of non-occluded voxels classified as empty
+        - OCCLUDED: proportion of voxels classified as occluded/null
+        - PAD: mean plant area density (m^2/m^3) for non-occluded voxels in this height bin
+
+        **Notes:**
+        - These columns represent the expected result following default classification and processing algorithms. For advanced use, see `Grid.summarize_by_height()`.
+        - Height above ground is estimated for the center of each voxel cell, then voxels are assigned to height bins using integer (floor) division: `HEIGHT_BIN = HAG // CELL_SIZE`.
+
+        ### Plot Summary (export_folder/Plot_Summary)
+        A table that contains a row for each plot ID (each file). Data are clipped to plot_radius, then summarized.
+
+        **Columns:**
+        - TERRAIN_SLOPE: mean terrain slope in degrees
+        - TERRAIN_ASPECT: mean terrain aspect in degrees relative to the y coordinate axis (relative to north if y-axis has been aligned to north).
+        - TERRAIN_ROUGHNESS: RMSE of elevation deviations from the de-trended DEM (meters).
+        - TERRAIN_CONCAVITY: Sum of elevation devations within half of the plot radius minus sum of elevation deviations beyond half of the plot radius (meters).
+        - CANOPY_COVER: Proportion of non-occluded plot area where canopy height > cutoff_height (default=2 meters), calculated via raster approach (see `Grid.calculate_canopy_cover`)
+        - PLT_CN: user-specified plot_id
+
         """
         from voxelmon.utils import _default_postprocessing,_default_folder_setup
         from pathlib import Path
@@ -1392,6 +1521,62 @@ class TLS_PTX_Group:
                 is considered non-foliage.
 
         Returns: Grid (Grid), Profile (pd.DataFrame), Summary (pd.DataFrame)
+
+        ## Standard Output Descriptions:
+
+        ### Grid (export_folder/PAD_Grid)
+        A table that contains a row for each 3D grid cell (ie voxel)
+
+        **Columns:**
+        - X: x coordinate for center of voxel
+        - Y: y coordinate for center of voxel
+        - Z: z coordinate for center of voxel
+        - HAG: height above ground for center of voxel, meters
+        - P_DIRECTED: total count of pulses directed towards this voxel (includes pulses that were intercepted before arrival)
+        - P_TRANSMITTED: count of pulses that were transmitted *through* this voxel
+        - P_INTERCEPTED: count of pulses that were intercepted *within* this voxel
+        - OCCLUSION: ratio of pulses intercepted *before* reaching this voxel `OCCLUSION = 1-(P_TRANSMITTED+P_INTERCEPTED)/P_DIRECTED`
+        - PAD: plant (leaf) area density, m^2/m^3. `PAD = -np.log(1 - (P_INTERCEPTED / (P_INTERCEPTED + P_TRANSMITTED))) / (G * MEAN_PATH_LENGTH)`
+        - CLASSIFICATION: value describing voxel classification according to `Grid.classification_key`
+
+        **Notes:**
+        - Input grid coordinates are assumed to be in meters. Otherwise, units will differ.
+        - Grid coordinates are calculated after applying transforms to the PTX file.
+        - G is assumed to be 0.5 and MEAN_PATH_LENGTH is assumed to be `0.843 * CELL_SIZE`, following [Grau et al 2017](https://doi.org/10.1016/j.rse.2017.01.032).
+        - Using the default processing and classification algorithms, the classification is based on thresholds of occlusion and PAD.
+          - If occlusion > max_occlusion, class = -1 (occluded/null)
+          - If PAD < 0, class = -1 (occluded/null)
+          - If PAD >= min_pad_foliage, class = 3 (foliage)
+          - If PAD > max_pad_foliage, class = 5 (non-foliage)
+          - Otherwise, class = -2 (empty)
+
+        ### Profile (export_folder/PAD_Profile)
+        A table that contains a row for each height bin. Voxels are clipped to plot_radius, then summarized by height-above-ground.
+
+        **Columns:**
+        - PLT_CN: plot ID, taken from the filename of the scan
+        - HT: height above ground, meters
+        - HEIGHT_BIN: unitless integer representing height above ground, used for table joins
+        - FOLIAGE: proportion of non-occluded voxels classified as foliage
+        - NONFOLIAGE: proportion of non-occluded voxels classified as non-foliage
+        - EMPTY: proportion of non-occluded voxels classified as empty
+        - OCCLUDED: proportion of voxels classified as occluded/null
+        - PAD: mean plant area density (m^2/m^3) for non-occluded voxels in this height bin
+
+        **Notes:**
+        - These columns represent the expected result following default classification and processing algorithms. For advanced use, see `Grid.summarize_by_height()`.
+        - Height above ground is estimated for the center of each voxel cell, then voxels are assigned to height bins using integer (floor) division: `HEIGHT_BIN = HAG // CELL_SIZE`.
+
+        ### Plot Summary (export_folder/Plot_Summary)
+        A table that contains a row for each plot ID (each file). Data are clipped to plot_radius, then summarized.
+
+        **Columns:**
+        - TERRAIN_SLOPE: mean terrain slope in degrees
+        - TERRAIN_ASPECT: mean terrain aspect in degrees relative to the y coordinate axis (relative to north if y-axis has been aligned to north).
+        - TERRAIN_ROUGHNESS: RMSE of elevation deviations from the de-trended DEM (meters).
+        - TERRAIN_CONCAVITY: Sum of elevation devations within half of the plot radius minus sum of elevation deviations beyond half of the plot radius (meters).
+        - CANOPY_COVER: Proportion of non-occluded plot area where canopy height > cutoff_height (default=2 meters), calculated via raster approach (see `Grid.calculate_canopy_cover`)
+        - PLT_CN: user-specified plot_id
         """
         from voxelmon.utils import _default_folder_setup, _default_postprocessing
 

@@ -8,7 +8,7 @@ include-package-data = true
 
 [project]
 name = "voxelmon"
-version = "0.1.1"
+version = "0.2.0"
 description = "Estimate voxelized leaf area density metrics from lidar for wildfire risk modeling, treatment effect monitoring, hydrology analysis, wildlife habitat suitability, and more."
 license = 'LGPL-2.0-or-later'
 license-files = ["LICENSE.txt"]

@@ -35,7 +35,7 @@ generate_figures = True # Generate figures
 
 plot_radius = 11.3 # Distance from grid center to edge
 max_grid_height = 30 # Height of grid above coordinate [0,0,0] (height in meters of tallest expected tree)
-max_occlusion = .75 # Voxels with occulsion greater than this threshold are considered null
+max_occlusion = .8 # Voxels with occulsion greater than this threshold are considered null
 cell_size = .1 # Side-length of voxels
 min_height = 1 # Minimum height considered in CBD profiles
 
@@ -67,7 +67,6 @@ if process:
                                                                      plot_radius=plot_radius, max_height=max_grid_height, max_occlusion=max_occlusion,
                                                                      sigma1=0, min_pad_foliage=.01, max_pad_foliage=6)
         profile['PLT_CN'] = base_file_name
-        profile['CANOPY_CLASS'] = field_summary.loc[base_file_name, 'CANOPY_CLASS']
         profile['CBD'] = canopy_model.predict(profile, lidar_value_col='PAD', height_col='HT', plot_id_col='PLT_CN')
 
         profile.to_csv(export_folder / 'PAD_Profile' / (base_file_name + '.csv'), index=False)

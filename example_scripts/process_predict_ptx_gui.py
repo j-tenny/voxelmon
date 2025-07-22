@@ -61,7 +61,7 @@ class ParameterForm(QWidget):
         add_spin_field("plot_radius", 11.3)
         add_spin_field("min_height", 0.2)
         add_spin_field("max_grid_height", 30)
-        add_spin_field("max_occlusion", 0.75)
+        add_spin_field("max_occlusion", 0.8)
 
         cbd_input = QLineEdit(); cbd_input.setPlaceholderText("Leave blank for None")
         self.fields["cbd_axis_limit"] = lambda: float(cbd_input.text()) if cbd_input.text() else None
@@ -116,7 +116,7 @@ def process(input_folder, export_folder, field_summary_path, canopy_model_path,
     # Read field data
     field_summary = pd.read_csv(Path(input_folder).joinpath(field_summary_path), index_col='PLT_CN')
     # Get ptx filepaths
-    files = get_files_list(input_folder, '.csv', recursive=False)
+    files = get_files_list(input_folder, '.ptx', recursive=False)
 
     # Run processing on each ptx file
     start_time_all = time.time()
@@ -127,7 +127,7 @@ def process(input_folder, export_folder, field_summary_path, canopy_model_path,
     if process:
         for ptx_file in files:
             start_time = time.time()
-            print("Starting file ", i, " of ", len(files))
+            print("Starting pre-processing for file ", i, " of ", len(files))
             base_file_name = os.path.splitext(os.path.basename(ptx_file))[0].split('-')[0]
 
             ptx = TLS_PTX(ptx_file, apply_translation=False, apply_rotation=True, drop_null=False)
@@ -139,7 +139,6 @@ def process(input_folder, export_folder, field_summary_path, canopy_model_path,
                                                                          sigma1=0, min_pad_foliage=.01,
                                                                          max_pad_foliage=6)
             profile['PLT_CN'] = base_file_name
-            profile['CANOPY_CLASS'] = field_summary.loc[base_file_name, 'CANOPY_CLASS']
             profile['CBD'] = canopy_model.predict(profile, lidar_value_col='PAD', height_col='HT', plot_id_col='PLT_CN')
 
             profile.to_csv(export_folder / 'PAD_Profile' / (base_file_name + '.csv'), index=False)
@@ -147,7 +146,10 @@ def process(input_folder, export_folder, field_summary_path, canopy_model_path,
             print("Finished file ", i, " of ", len(files), " in ", round(time.time() - start_time, 3), " seconds")
             i += 1
 
-        print("Finished all files in ", round(time.time() - start_time_all), " seconds")
+        print("Finished pre-processing all files in ", round(time.time() - start_time_all), " seconds \n")
+
+    print('Starting fuel and fire behavior summaries...')
+    start_time = time.time()
 
     # Read CBD profiles from output csv files
     profile_paths = get_files_list(export_folder / 'PAD_Profile', '.csv', recursive=False)
@@ -223,6 +225,10 @@ def process(input_folder, export_folder, field_summary_path, canopy_model_path,
 
     summary.to_csv(export_folder.joinpath('results_summary.csv'))
 
+    print("Finished fuel and fire behavior summaries in ", round(time.time() - start_time), " seconds \n")
+    print("Starting figure outputs...")
+    start_time = time.time()
+
     # Generate output figures
     if generate_figures:
         import polars as pl
@@ -270,8 +276,14 @@ def process(input_folder, export_folder, field_summary_path, canopy_model_path,
             f.tight_layout(pad=2)
             plt.savefig(export_folder.joinpath(plotname + '.png'), dpi=300)
             plt.show()
+            print("Finished figure for ", plotname)
+
+    print("Finished figure outputs in ", round(time.time() - start_time), " seconds \n")
+    print("Finished all processing in ", round(time.time() - start_time_all), " seconds")
+    print("Done. You can close this window.")
 
 if __name__ == "__main__":
+    print("Process PTX files and predict fire behavior \n**Leave this window open!**")
     app = QApplication(sys.argv)
     stacked = QStackedWidget()
     form = ParameterForm(stacked)
