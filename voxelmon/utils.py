@@ -126,7 +126,7 @@ def bin3D(pulses, function, cellSize,asArray = True, binExtents=None):
     else:
         return result
 
-def open_file_pdal(filepath,bounds=None,calculate_height=True,reproject_to=None)->Tuple['pl.DataFrame',str]:
+def open_file_pdal(filepath, reader=None, bounds=None,calculate_height=True,reproject_to=None)->Tuple['pl.DataFrame',str]:
     """Read a file to a polars dataframe with pdal. Returns pl.DataFrame and crs
 
     Args:
@@ -142,11 +142,14 @@ def open_file_pdal(filepath,bounds=None,calculate_height=True,reproject_to=None)
 
     result=0
 
+    if reader is None:
+        reader = pdal.Reader
+
     filters = []
     if bounds is not None:
-        filters.append(pdal.Reader(filepath, bounds=bounds))
+        filters.append(reader(filepath, bounds=bounds))
     else:
-        filters.append(pdal.Reader(filepath))
+        filters.append(reader(filepath))
 
     if reproject_to is not None:
         filters.append(pdal.Filter.reprojection(out_srs=reproject_to))
@@ -994,6 +997,63 @@ def rh_from_profile(profile:pd.DataFrame,
     rh.insert(0, 'LAI', lai)
 
     return rh
+
+def calculate_dem_metrics(dem_df, clip_radius=None) -> dict:
+    """Summarize overall terrain slope, aspect, roughness, and concavity"""
+    import statsmodels.api as sm
+    import pandas as pd
+    results = {}
+
+    if clip_radius is not None:
+        # Calculate horizontal distance from center
+        dem_df['HD'] = np.sqrt(dem_df['X'] ** 2 + dem_df['Y'] ** 2)
+        # Filter outside of plot radius
+        dem_df = dem_df[dem_df['HD'] < clip_radius]
+    dem_df = dem_df[~np.isnan(dem_df['Z'])]
+    dem_df['intercept'] = 1
+
+    # Fit a plane using linear regression
+    model = sm.OLS(dem_df['Z'],dem_df[['intercept','X', 'Y']]).fit()
+
+    # Extract coefficients
+    intercept = model.params.iloc[0]
+    coef_x = model.params.iloc[1]
+    coef_y = model.params.iloc[2]
+
+    # Normal vector of the plane
+    normal_vector = np.array([coef_x, coef_y, -1])
+
+    # Normalize the normal vector to get a unit vector
+    normal_unit_vector = normal_vector / np.linalg.norm(normal_vector)
+    if normal_unit_vector[2] < 0:
+        normal_unit_vector *= -1
+
+    # Unit vector along the Z-axis (to get terrain slope relative to up)
+    z_axis_vector = np.array([0, 0, 1])
+
+    # Unit vector along Y-axis (to get terrain aspect relative to north)
+    y_axis_vector = np.array([0, 1, 0])
+
+    # Calculate the dot product between the unit vectors
+    dot_product_z = np.dot(normal_unit_vector, z_axis_vector)
+
+    # Assign angles to data
+    results['TERRAIN_SLOPE'] = np.degrees(np.arccos(dot_product_z))
+    terrain_aspect = np.degrees(np.arctan2(normal_unit_vector[0], normal_unit_vector[1]))
+    if terrain_aspect < 0:
+        terrain_aspect += 360
+    results['TERRAIN_ASPECT'] = terrain_aspect
+
+    # Calculate terrain shape metrics
+    dem_df['resid'] = dem_df['Z'] - model.predict(dem_df[['intercept', 'X', 'Y']])
+    results['TERRAIN_ROUGHNESS'] = np.sqrt(np.mean(dem_df['resid'] ** 2))
+    if clip_radius is not None:
+        hd_half = clip_radius / 2
+        sum_inner = dem_df[dem_df['HD'] < hd_half]['resid'].sum()
+        sum_outer = dem_df[dem_df['HD'] >= hd_half]['resid'].sum()
+        results['TERRAIN_CONCAVITY'] = sum_inner - sum_outer
+
+    return results
 
 def visualize_voxels(grid:'pl.DataFrame',
                      dem:'pl.DataFrame',
