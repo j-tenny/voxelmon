@@ -263,12 +263,12 @@ def plot_side_view(xyz,direction=0,demPtsNormalize=None,returnData=False):
 def summarize_profiles(profiles, plot_id_col='PLT_CN', height_col='HT',
                        cbd_col='CBD', pad_col = 'PAD',
                        min_height=1., fsg_threshold=.011, ):
-    bin_height = profiles[height_col].iloc[1] - profiles[height_col].iloc[0]
+    bin_height = (profiles[height_col].iloc[1:] - profiles[height_col].iloc[:-1]).mode().iloc[0]
 
+    profiles = profiles[profiles[height_col] >= min_height]
     lai = profiles.groupby(plot_id_col).agg({pad_col: 'sum'})[pad_col] * bin_height
     lai.name = 'LAI'
 
-    profiles = profiles[profiles[height_col] >= min_height]
     profiles_pivot = profiles.pivot(index=plot_id_col, columns=height_col, values=cbd_col).reset_index().fillna(0)
     cbd_arr = profiles_pivot.iloc[:, 1:].to_numpy()
     heights = np.array(profiles_pivot.columns[1:], float)
@@ -903,8 +903,8 @@ def estimate_foliage_from_treelist(treelist:pd.DataFrame,
         treelist[dia_col] = conv.cm2in(treelist[dia_col])
         treelist[ht_col] = conv.m2ft(treelist[ht_col])
         treelist[tpa_col] = conv.tph2tpa(treelist[tpa_col])
-        treelist[agb_col] = conv.lb2kg(treelist[agb_col])
-        treelist[foliage_mass_col] = conv.lb2kg(treelist[foliage_mass_col])
+        treelist[agb_col] = conv.kg2lb(treelist[agb_col])
+        treelist[foliage_mass_col] = conv.kg2lb(treelist[foliage_mass_col])
 
     return treelist
 
@@ -980,16 +980,18 @@ def rh_from_profile(profile:pd.DataFrame,
     )
 
     lad = lad.fillna(0)
+    heights = np.array([col[1] for col in lad.columns])
 
-    lai = lad.sum(1) * 2  # bin_size=2m
+    bin_size = heights[1] - heights[0]
+
+    lai = lad.sum(1) * bin_size  # bin_size=2m
     lai.name = 'LAI'
     lad_max = lad.max(1)
-    ht_lad_max = np.argmax(lad, axis=1) * 2  # bin_size=2m
+    ht_lad_max = np.argmax(lad, axis=1) * bin_size  # bin_size=2m
 
     clad = lad.copy().to_numpy()
     clad = np.cumsum(clad, axis=1) / clad.sum(1).repeat(clad.shape[1]).reshape(clad.shape)
 
-    heights = np.array([col[1] for col in lad.columns])
     rh = np.apply_along_axis(lambda vals: np.interp(percentiles, vals, heights), 1, clad)
     rh = pd.DataFrame(rh, index=lad.index, columns=[f'RH_{round(p * 100)}' for p in percentiles])
     rh.insert(0, 'HT_LAD_MAX', ht_lad_max)
@@ -997,6 +999,179 @@ def rh_from_profile(profile:pd.DataFrame,
     rh.insert(0, 'LAI', lai)
 
     return rh
+
+
+def simplify_profile_to_row(profile: pd.DataFrame,
+                            values: str = 'PAD',
+                            ht_col: str = 'HT',
+                            plot_id_col: str = 'PLT_CN',
+                            bin_edges=(.1, 1., 2., 4., 7., 11., 16., 22., 29., 37., 46., 56., 67., 79., 92., 999),
+                            aggfunc='mean',
+                            ):
+    if type(values) == str:
+        values = [values]
+    copy_cols = [plot_id_col, ht_col] + values
+    bin_edges = np.array(bin_edges)
+    profile = profile[copy_cols].copy()
+    profile['HT_BIN'] = pd.cut(profile[ht_col], bin_edges, right=False)
+    summary = profile.pivot_table(index=[plot_id_col, 'HT_BIN'], values=values, aggfunc=aggfunc).reset_index()
+    summary = summary.pivot(index=plot_id_col, columns='HT_BIN', values=values)
+    new_cols = []
+    for col in summary.columns:
+        value_name = col[0]
+        interval_left = str(col[1].left).rstrip('0').rstrip('.').replace('.', '_')
+        interval_right = str(col[1].right).rstrip('0').rstrip('.').replace('.', '_')
+        new_cols.append(f'{value_name}_{interval_left}T{interval_right}')
+    summary.columns = new_cols
+    return summary
+
+
+def create_dem_iterative_height_filter(points,
+                                       crs,
+                                       output_path=None,
+                                       origin = [0,0],
+                                       window_sizes=[5, 2.5, 1, .5],
+                                       height_thresholds=[2.5, 1.25, .5, .25],
+                                       ground_quantile = 0.):
+    """Create a digital elevation model from a point cloud using iterative height filtering
+
+    A ground surface is estimated using the minimum elevation within 2D grid cells with gaps filled using 2D linear
+    interpolation. From this surface, height-above-ground is calculated for all lidar points. Points above a
+    height-above-ground threshold are filtered out. This process is repeated using progressively smaller window sizes
+    and height thresholds.
+
+    Written by Johnathan Tenny (jt893@nau.edu) based on Caster et al 2021 https://doi.org/10.1016/j.geoderma.2021.115369
+
+    Args:
+        points: a numpy array or polars dataframe where the first three columns are x, y, z coordinates of a point cloud
+        crs: coordinate system of point cloud
+        output_path: filepath to write output raster
+        origin: origin of the output DEM
+        window_sizes: list of progressively smaller xy window resolutions
+        height_thresholds: list of progressively smaller height thresholds
+        ground_quantile: statistical quantile of elevation within bin to use as ground elevation.
+            Set to 0. to use minimum elevation or adjust if ground elevations seem biased.
+    """
+
+    import polars as pl
+    import numpy as np
+    import rasterio
+    import xarray as xr
+    import rioxarray as rxr
+
+    def bin2D(points_df, function, cell_size, origin=(0, 0)) -> 'polars.DataFrame':
+        """Aggregate point cloud to a 2D grid and apply a polars function
+
+        points_df: a polars dataframe with columns 'X', 'Y', 'Z'
+        function: a function compatible with polars.DataFrame.aggregate(); may need to specify col name e.g. pl.min('z')
+        cell_size: float value for output raster resolution
+        origin: origin of grid relative to coordinates
+        """
+        # Function should be from polars and
+
+        import polars as pl
+        import numpy as np
+
+        # Get function value for each bin
+        points_df = points_df.with_columns(pl.col('X').sub(origin[0]).floordiv(cell_size).cast(pl.Int32).alias('XBin'),
+                                           pl.col('Y').sub(origin[1]).floordiv(cell_size).cast(pl.Int32).alias('YBin'))
+
+        bin_vals = points_df.group_by(['XBin', 'YBin']).agg(function)
+
+        # Get df containing all possible bins
+        binminx = points_df['XBin'].min()
+        binminy = points_df['YBin'].min()
+        binmaxx = points_df['XBin'].max()
+        binmaxy = points_df['YBin'].max()
+
+        ybins, xbins = np.meshgrid(np.arange(binminy, binmaxy + 1),
+                                   np.arange(binminx, binmaxx + 1),
+                                   indexing='ij')
+
+        bins_df = pl.DataFrame({'YBin': ybins.flatten().astype(np.int32),
+                                'XBin': xbins.flatten().astype(np.int32)})
+
+        return bins_df.join(bin_vals, ['YBin', 'XBin'], 'left')
+
+    # Format point cloud as polars dataframe
+    try:
+        points = points.xyz
+    except:
+        points = points[:, 0:3]
+
+    points_df = pl.DataFrame({'X': points[:, 0], 'Y': points[:, 1], 'Z': points[:, 2]})
+
+    # Iterative height filtering
+    for window_size, height_thresh in zip(window_sizes, height_thresholds):
+        # Get ground surface based on low point in window
+        bin_df = bin2D(points_df, pl.quantile('Z',ground_quantile), window_size, origin)
+        bin_df = bin_df.rename({'Z':'Ground'})
+
+        # Interpolate missing values
+        mask_valid = bin_df['Ground'].is_finite().is_not_null()
+        if mask_valid.sum() != len(bin_df):
+            points_valid = bin_df.filter(mask_valid).select(['YBin','XBin'])
+            values_valid = bin_df.filter(mask_valid)['Ground']
+            points_missing = bin_df.filter(~mask_valid).select(['YBin','XBin'])
+            values_missing = interp2D_w_nearest_neighbor_extrapolation(points_valid.to_numpy(), values_valid.to_numpy(), points_missing.to_numpy())
+            new_vals = bin_df['Ground'].to_numpy().copy()
+            new_vals[~mask_valid] = values_missing
+            bin_df = bin_df.with_columns(pl.lit(new_vals).alias('Ground'))
+
+        # Get height-above-ground
+        points_df = points_df.with_columns(pl.col('Y').sub(origin[1]).floordiv(window_size).cast(pl.Int32).alias('YBin'),
+                                            pl.col('X').sub(origin[0]).floordiv(window_size).cast(pl.Int32).alias('XBin'))
+
+        points_df = points_df.drop('Ground',strict=False).join(bin_df, ['YBin', 'XBin'], 'left')
+
+        # Remove points above the height threshold
+        points_df = points_df.filter(pl.col('Z') <= pl.col('Ground').add(height_thresh))
+
+    # Convert to raster
+    nx = bin_df['XBin'].n_unique()
+    ny = bin_df['YBin'].n_unique()
+    grid = bin_df.sort(['YBin','XBin'],descending=[True,False])['Ground'].to_numpy().reshape([ny,nx])
+
+    # Get coordinates of upper left corner
+    ul_x = bin_df['XBin'].min() * window_size + origin[0]
+    ul_y = bin_df['YBin'].max() * window_size + window_size + origin[1]
+
+    transform = rasterio.transform.from_origin(ul_x, ul_y, window_size, window_size)
+
+    metadata = {
+        'driver': 'GTiff',
+        'dtype': rasterio.float32,
+        'nodata': None,
+        'width': nx,
+        'height': ny,
+        'count': 1,  # Number of bands
+        'crs': crs,  # Coordinate reference system
+        'transform': transform,
+    }
+
+    x_coords = ul_x + (np.arange(nx) + 0.5)*window_size
+    y_coords = ul_y - (np.arange(ny) + 0.5)*window_size
+
+    da = xr.DataArray(
+        grid,
+        dims=("Y", "X"),
+        coords={"X": x_coords, "Y": y_coords},  # optional
+        name="Z"
+    )
+
+    da.rio.set_spatial_dims('X','Y')
+    da.rio.write_transform(transform, inplace=True)
+    da.rio.write_crs(crs, inplace=True)
+    da.rio.write_nodata(metadata["nodata"], inplace=True)
+
+    if output_path is not None:
+        da.rio.to_raster(output_path)
+
+    # if output_path is not None:
+    #     with rasterio.open(output_path, 'w', **metadata) as dst:
+    #         dst.write(grid.astype(rasterio.float32), 1)  # Write to band 1
+
+    return da
 
 def calculate_dem_metrics(dem_df, clip_radius=None) -> dict:
     """Summarize overall terrain slope, aspect, roughness, and concavity"""
