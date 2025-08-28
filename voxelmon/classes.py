@@ -740,10 +740,31 @@ class ALS:
 
             """
         from voxelmon.utils import open_file_pdal
+        import os
         self.path = filepath
         self.bounds = bounds
         self.reader = reader
-        self.points, self.crs = open_file_pdal(self.path, reader=self.reader, bounds=self.bounds, calculate_height=calculate_height, reproject_to=reproject_to)
+        ext = os.path.splitext(filepath)[1]
+        if ext == '.csv':
+            self.points = pl.read_csv(filepath)
+        elif ext == '.feather':
+            import geopandas as gpd
+            self.points = gpd.read_feather(filepath)
+            self.points.insert(0,'X',self.points.geometry.x)
+            self.points.insert(1, 'Y', self.points.geometry.y)
+            self.points.insert(2, 'Z', self.points.geometry.z)
+            self.points.drop(columns=['geometry','wkb','xyz'],inplace=True,errors='ignore')
+            self.points = pl.from_pandas(self.points)
+        elif ext == '.parquet':
+            import geopandas as gpd
+            self.points = gpd.read_parquet(filepath)
+            self.points.insert(0,'X',self.points.geometry.x)
+            self.points.insert(1, 'Y', self.points.geometry.y)
+            self.points.insert(2, 'Z', self.points.geometry.z)
+            self.points.drop(columns=['geometry','wkb','xyz'],inplace=True,errors='ignore')
+            self.points = pl.from_pandas(self.points)
+        else:
+            self.points, self.crs = open_file_pdal(self.path, reader=self.reader, bounds=self.bounds, calculate_height=calculate_height, reproject_to=reproject_to)
 
     def estimate_flightpath(self, min_separation:float=2,
                             time_bin_size:float=.5,
@@ -940,7 +961,7 @@ class ALS:
             points_df = pl.DataFrame({'Z':arr[:,2]})
             points_df = points_df.with_columns(pl.col('Z').floordiv(bin_size_z).cast(pl.Int32).alias('zBin'))
             counts = points_df.group_by('zBin').agg(pl.count())
-            all_bins = pl.DataFrame({'zBin':np.arange(points_df['zBin'].min(), points_df['zBin'].max())})
+            all_bins = pl.DataFrame({'zBin':np.arange(points_df['zBin'].min(), points_df['zBin'].max())}).cast(pl.Int32)
             counts = all_bins.join(counts, 'zBin', 'left').sort('zBin')
             counts = counts.fill_nan(0).fill_null(0).to_numpy()
 
