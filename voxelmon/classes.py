@@ -722,7 +722,7 @@ class Pulses:
             self.df.write_csv(filepath)
 
 class ALS:
-    def __init__(self,filepath, reader:'pdal.Reader'=None, bounds:str = None, calculate_height:bool=False,reproject_to=None):
+    def __init__(self,filepath=None, reader:'pdal.Reader'=None, bounds:str = None, calculate_height:bool=False,reproject_to=None):
         """Initialize ALS reader
 
         Args:
@@ -744,27 +744,41 @@ class ALS:
         self.path = filepath
         self.bounds = bounds
         self.reader = reader
-        ext = os.path.splitext(filepath)[1]
-        if ext == '.csv':
-            self.points = pl.read_csv(filepath)
-        elif ext == '.feather':
-            import geopandas as gpd
-            self.points = gpd.read_feather(filepath)
-            self.points.insert(0,'X',self.points.geometry.x)
-            self.points.insert(1, 'Y', self.points.geometry.y)
-            self.points.insert(2, 'Z', self.points.geometry.z)
-            self.points.drop(columns=['geometry','wkb','xyz'],inplace=True,errors='ignore')
-            self.points = pl.from_pandas(self.points)
-        elif ext == '.parquet':
-            import geopandas as gpd
-            self.points = gpd.read_parquet(filepath)
-            self.points.insert(0,'X',self.points.geometry.x)
-            self.points.insert(1, 'Y', self.points.geometry.y)
-            self.points.insert(2, 'Z', self.points.geometry.z)
-            self.points.drop(columns=['geometry','wkb','xyz'],inplace=True,errors='ignore')
-            self.points = pl.from_pandas(self.points)
+        if filepath is not None:
+            ext = os.path.splitext(filepath)[1]
+            if ext == '.csv':
+                self.points = pl.read_csv(filepath)
+                self.crs = None
+            elif ext == '.feather':
+                import geopandas as gpd
+                self.points = gpd.read_feather(filepath)
+                self.points.insert(0,'X',self.points.geometry.x)
+                self.points.insert(1, 'Y', self.points.geometry.y)
+                self.points.insert(2, 'Z', self.points.geometry.z)
+                self.points.drop(columns=['geometry','wkb','xyz'],inplace=True,errors='ignore')
+                self.points = pl.from_pandas(self.points)
+                self.crs = None
+            elif ext == '.parquet':
+                import geopandas as gpd
+                self.points = gpd.read_parquet(filepath)
+                self.points.insert(0,'X',self.points.geometry.x)
+                self.points.insert(1, 'Y', self.points.geometry.y)
+                self.points.insert(2, 'Z', self.points.geometry.z)
+                self.points.drop(columns=['geometry','wkb','xyz'],inplace=True,errors='ignore')
+                self.points = pl.from_pandas(self.points)
+                self.crs = None
+            else:
+                self.points, self.crs = open_file_pdal(self.path, reader=self.reader, bounds=self.bounds, calculate_height=calculate_height, reproject_to=reproject_to)
         else:
-            self.points, self.crs = open_file_pdal(self.path, reader=self.reader, bounds=self.bounds, calculate_height=calculate_height, reproject_to=reproject_to)
+            self.points = None
+            self.crs = None
+
+    @classmethod
+    def from_table(cls, points, crs=None):
+        als = cls()
+        als.points = points
+        als.crs = crs
+        return als
 
     def estimate_flightpath(self, min_separation:float=2,
                             time_bin_size:float=.5,
@@ -886,7 +900,7 @@ class ALS:
         self.origin = interpolate_flightpath(self.points,flightpath)
         return flightpath
 
-    def simple_pad(self, bin_size_xy = 10, bin_size_z = 2, min_height = 1, extinction_coefficient=.5, return_type='polars'):
+    def simple_pad(self, bin_size_xy = 10, bin_size_z = 2, min_height = 1, extinction_coefficient=.5, return_type='polars', return_counts=False):
         """Estimate plant area density with assumption that pulses were directed straight down.
 
         Requires calculate_height=True when initializing ALS()
@@ -917,21 +931,24 @@ class ALS:
             pulses_in = counts_cs[:,:,1:]
             pulses_out = counts_cs[:,:,:-1]
             lad = -np.log(pulses_out/pulses_in)/(extinction_coefficient*bin_size_z)
-            lad[pulses_in==0] = np.nan
-            lad[pulses_out==0] = np.nan
+            lad[pulses_in<0] = np.nan
+            lad[pulses_out < 0] = np.nan
 
             x_centers = counts['xBin'].unique() * bin_size_xy + bin_size_xy / 2
             y_centers = counts['yBin'].unique() * bin_size_xy + bin_size_xy / 2
             z_centers = counts['zBin'].unique()[1:] * bin_size_z + bin_size_z / 2 + min_height
 
             if return_type == 'numpy':
-                return lad
+                return_dat =  lad
             elif return_type == 'polars':
                 z, y, x = np.meshgrid(z_centers,y_centers,x_centers, indexing='ij')
-                return pl.DataFrame({'X':x.flatten(),'Y': y.flatten(), 'Z':z.flatten(),'PAD':lad.flatten('F')})
+                return_dat =  pl.DataFrame({'X':x.flatten(),'Y': y.flatten(), 'Z':z.flatten(),'PAD':lad.flatten('F')})
             elif return_type == 'xarray':
                 import xarray as xr
-                return xr.DataArray(lad,coords={'X':x_centers,'Y':y_centers,'Z':z_centers},dims=['X','Y','Z'],name='PAD')
+                da = xr.DataArray(lad,coords={'X':x_centers,'Y':y_centers,'Z':z_centers},dims=['X','Y','Z'],name='PAD')
+                da = da.rio.write_crs(self.crs)
+                da = da.rio.set_spatial_dims('X','Y')
+                return_dat =  da
             elif return_type == 'voxelmon':
                 import xarray as xr
                 if bin_size_xy != bin_size_z:
@@ -955,7 +972,11 @@ class ALS:
 
                 grid.dem = np.zeros_like(grid.p_intercepted)
 
-                return grid
+                return_dat =  grid
+            if return_counts:
+                return return_dat,counts_grid
+            else:
+                return return_dat
         else:
             # Implement in 1D
             points_df = pl.DataFrame({'Z':arr[:,2]})
@@ -973,9 +994,9 @@ class ALS:
             lad[pulses_out == 0] = np.nan
 
             if return_type == 'numpy':
-                return lad
+                return_dat =  lad
             elif return_type == 'polars':
-                return pl.DataFrame({'X': self.points['X'].mean(),
+                return_dat =  pl.DataFrame({'X': self.points['X'].mean(),
                                      'Y': self.points['Y'].mean(),
                                      'Z': counts[1:,0] * bin_size_z + bin_size_z / 2 + min_height,
                                      'PAD': lad})
@@ -983,11 +1004,19 @@ class ALS:
                 raise NotImplementedError('xarray return type not implemented for 1D')
             elif return_type == 'voxelmon':
                 raise ValueError('bin_size_xy must be equal to bin_size_z for voxelmon.Grid')
+            if return_counts:
+                return return_dat,counts
+            else:
+                return return_dat
 
     def clip_circle(self, x_center, y_center, radius):
-        """Clip pulses to circle around a point"""
+        """Clip points to circle around a point"""
         horizontal_distance = ((self.points['X'] - x_center) ** 2 + (self.points['Y'] - y_center) ** 2)**.5
         self.points = self.points.filter(horizontal_distance <= radius)
+
+    def clip_rectangle(self, x_min, y_min, x_max, y_max):
+        """Clip points to a bounding rectangle"""
+        self.points = self.points.filter((pl.col('X') >= x_min) & (pl.col('X') <= x_max) & (pl.col('Y') >= y_min) & (pl.col('Y') <= y_max))
 
     def execute_default_processing(self, export_folder:str,
                                    plot_name:str,

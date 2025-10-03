@@ -221,13 +221,16 @@ def normalize(xyz_df,dem_df,cellSize=None):
     return xyz_df
 
 
-def plot_side_view(xyz,direction=0,demPtsNormalize=None,returnData=False):
+def plot_side_view(xyz,direction=0,demPtsNormalize=None,returnData=False, useHAG=False, cellSize=0.1):
     # dir=0=+y, dir=1=+x, dir=2=-y, dir=3=-x
     import polars as pl
     import numpy as np
     import matplotlib.pyplot as plt
 
-    points_df = pl.DataFrame({'X': xyz[:, 0], 'Y': xyz[:, 1], 'Z': xyz[:, 2]})
+    if useHAG:
+        points_df = pl.DataFrame({'X': xyz['X'], 'Y': xyz['Y'], 'Z': xyz['HeightAboveGround']})
+    else:
+        points_df = pl.DataFrame({'X': xyz[:, 0], 'Y': xyz[:, 1], 'Z': xyz[:, 2]})
     if demPtsNormalize is not None:
         points_df = normalize(points_df,demPtsNormalize)
         points_df = points_df.filter(pl.col('Z')>=0)
@@ -238,19 +241,19 @@ def plot_side_view(xyz,direction=0,demPtsNormalize=None,returnData=False):
     extents3D = np.concatenate([mincoords,maxcoords])
 
     if direction == 0:
-        bins = bin3D(points_df, function=pl.min('Y'), cellSize=.1, asArray=True)
+        bins = bin3D(points_df, function=pl.min('Y'), cellSize=cellSize, asArray=True)
         bins = np.nanmin(bins,axis=1)
         extents2D = extents3D[[0,3,2,5]]
     elif direction == 1:
-        bins = bin3D(points_df, function=pl.min('X'), cellSize=.1, asArray=True)
+        bins = bin3D(points_df, function=pl.min('X'), cellSize=cellSize, asArray=True)
         bins = np.nanmin(bins, axis=0)
         extents2D = extents3D[[1, 4, 2, 5]]
     elif direction == 2:
-        bins = bin3D(points_df, function=pl.max('Y'), cellSize=.1, asArray=True)
+        bins = bin3D(points_df, function=pl.max('Y'), cellSize=cellSize, asArray=True)
         bins = np.nanmax(bins, axis=1)
         extents2D = extents3D[[0, 3, 2, 5]]
     else:
-        bins = bin3D(points_df, function=pl.max('X'), cellSize=.1, asArray=True)
+        bins = bin3D(points_df, function=pl.max('X'), cellSize=cellSize, asArray=True)
         bins = np.nanmax(bins, axis=0)
         extents2D = extents3D[[1, 4, 2, 5]]
 
@@ -258,6 +261,35 @@ def plot_side_view(xyz,direction=0,demPtsNormalize=None,returnData=False):
         return [np.rot90(bins),extents2D]
     else:
         return plt.imshow(np.rot90(bins),extent=extents2D)
+
+
+def plot_top_view(xyz, demPtsNormalize=None, returnData=False, useHAG=False, cellSize=0.1):
+    # dir=0=+y, dir=1=+x, dir=2=-y, dir=3=-x
+    import polars as pl
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    if useHAG:
+        points_df = pl.DataFrame({'X': xyz['X'], 'Y': xyz['Y'], 'Z': xyz['HeightAboveGround']})
+    else:
+        points_df = pl.DataFrame({'X': xyz[:, 0], 'Y': xyz[:, 1], 'Z': xyz[:, 2]})
+    if demPtsNormalize is not None:
+        points_df = normalize(points_df, demPtsNormalize)
+        points_df = points_df.filter(pl.col('Z') >= 0)
+
+    mincoords = points_df.select(['X', 'Y', 'Z']).min().to_numpy().flatten()
+    maxcoords = points_df.select(['X', 'Y', 'Z']).max().to_numpy().flatten()
+
+    extents3D = np.concatenate([mincoords, maxcoords])
+
+    bins = bin3D(points_df, function=pl.max('Z'), cellSize=cellSize, asArray=True)
+    bins = np.nanmax(bins, axis=2)
+    extents2D = extents3D[[0, 3, 1, 4]]
+
+    if returnData:
+        return [np.rot90(bins), extents2D]
+    else:
+        return plt.imshow(np.rot90(bins), extent=extents2D)
 
 
 def summarize_profiles(profiles, plot_id_col='PLT_CN', height_col='HT',
@@ -1005,7 +1037,7 @@ def simplify_profile_to_row(profile: pd.DataFrame,
                             values: str = 'PAD',
                             ht_col: str = 'HT',
                             plot_id_col: str = 'PLT_CN',
-                            bin_edges=(.1, 1., 2., 4., 7., 11., 16., 22., 29., 37., 46., 56., 67., 79., 92., 999),
+                            bin_edges=(.1, 1., 2., 4., 7., 11., 16., 22., 29., 37., 46., 56., 67., 79., 92., 999.),
                             aggfunc='mean',
                             ):
     if type(values) == str:
