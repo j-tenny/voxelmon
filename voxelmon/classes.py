@@ -408,7 +408,7 @@ class Grid:
     def calculate_dem_metrics(self, clip_radius=None) -> dict:
         """Summarize overall terrain slope, aspect, roughness, and concavity"""
         from voxelmon.utils import calculate_dem_metrics
-        dem_df = pl.DataFrame({'X': self.centers_xy[:, 0], 'Y': self.centers_xy[:, 1], 'Z':self.dem.flatten()})
+        dem_df = pd.DataFrame({'X': self.centers_xy[:, 0], 'Y': self.centers_xy[:, 1], 'Z':self.dem.flatten()})
         return calculate_dem_metrics(dem_df,clip_radius=clip_radius)
 
 
@@ -1152,11 +1152,12 @@ class TLS_PTX:
         self.path = filepath
         self._load_points(drop_null=drop_null)
         self._get_transform()
-        self.apply_transform(self.transform, apply_translation=apply_translation, apply_rotation=apply_rotation)
-        self.apply_offset(offset)
-        self._get_polar_coordinates()
-        if drop_null==False:
-            self._create_pseudo_returns()
+        if self.npoints > 0:
+            self.apply_transform(self.transform, apply_translation=apply_translation, apply_rotation=apply_rotation)
+            self.apply_offset(offset)
+            self._get_polar_coordinates()
+            if drop_null==False:
+                self._create_pseudo_returns()
 
     def _load_points(self, drop_null=False):
         import polars
@@ -1166,6 +1167,16 @@ class TLS_PTX:
             schema = [polars.Float64] * 4
         elif firstRow.size==7:
             schema = [polars.Float64] * 4 + [polars.Int32]*3
+        elif firstRow.size==0:
+            self.ncols = 0
+            self.nrows = 0
+            self.rowsCols = np.array([])
+            self.nullMask = np.array([])
+            self.npoints = 0
+            self.xyz = np.array([])
+            self.intensity = np.array([])
+            self.rgb = np.array([])
+            return None
         else:
             raise('Unexpected number of columns in PTX file')
 
@@ -1211,8 +1222,13 @@ class TLS_PTX:
             self.transform = np.loadtxt(aux_transform)
         else:
             self.transform = np.loadtxt(self.path,np.float64,skiprows=6,max_rows=4).T
-        self.originOriginal = self.transform[:3,3]
-        self.origin = np.array([0.,0.,0.])
+        if self.transform.size==16:
+            self.originOriginal = self.transform[:3,3]
+            self.origin = np.array([0., 0., 0.])
+        else:
+            self.originOriginal = None
+            self.transform = None
+            self.origin = None
 
     def apply_transform(self, transform, apply_translation=True, apply_rotation=True):
         toApply = np.eye(4,4)
