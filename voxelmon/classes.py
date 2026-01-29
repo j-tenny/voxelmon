@@ -1930,27 +1930,52 @@ class BulkDensityProfileModelFitter:
         leaf_mass = np.array(leaf_mass)
         X *= leaf_mass
 
+        # Get observed CBD as array
         y = self.profile_data[self.cbd_col].to_numpy()
 
-        #if fit_intercept:
-        #    raise NotImplementedError('Fit with intercept is not fully implemented')
+        # Get plot ID as integer array
+        group_idx, str_vals =pd.factorize(self.profile_data[self.plot_id_col])
+        group_idx = np.array(group_idx, int)
+
+        if fit_intercept:
+           raise NotImplementedError('Fit with intercept is not currently implemented')
 
         with pm.Model() as model:
-            # Priors for coefficients
-            betas = pm.Normal('betas', mu=prior_mean, sigma=prior_std, shape=(X.shape[1],))
 
-            # Assume normal distribution of residuals
+            # Global slopes
+            betas = pm.Normal(
+                'betas',
+                mu=prior_mean,
+                sigma=prior_std,
+                shape=X.shape[1]
+            )
+
+            # Group structure
+            n_groups = len(np.unique(group_idx))
+
+            # Between-group slope variance (hyperprior)
+            group_beta_sigma = pm.HalfNormal('group_beta_sigma', sigma=0.05)
+
+            # Group-specific slopes (hierarchical pooling)
+            group_betas = pm.Normal(
+                'group_betas',
+                mu=betas,  # centered on global slopes
+                sigma=group_beta_sigma,  # pooled deviation
+                shape=(n_groups, X.shape[1])
+            )
+
+            # Observation noise (separate from group structure)
             sigma = pm.HalfNormal('sigma', sigma=sigma_residuals)
 
-            if fit_intercept:
-                # Prior for the intercept
-                intercept = pm.Normal('intercept', mu=0, sigma=sigma_intercept)
+            # Linear predictor (no intercept terms)
+            mu = (
+                pm.math.sum(X * group_betas[group_idx], axis=1)
+            )
 
-                Y_obs = pm.Normal('Y_obs', mu=intercept + pm.math.dot(X, betas), sigma=sigma, observed=y)
-            else:
-                Y_obs = pm.Normal('Y_obs', mu=pm.math.dot(X, betas), sigma=sigma, observed=y)
+            # Likelihood
+            Y_obs = pm.Normal('Y_obs', mu=mu, sigma=sigma, observed=y)
 
-            # Inference (sampling from the posterior)
+            # Inference
             idata = pm.sample()
 
         # After sampling, you can inspect the posterior samples
@@ -1959,16 +1984,10 @@ class BulkDensityProfileModelFitter:
         import matplotlib.pyplot as plt
         plt.show()
         self.fit_summary = az.summary(idata, round_to=2)
-        if fit_intercept:
-            self.fit_summary.index = ['intercept'] + self.species_cols + ['sigma']
-            self.intercept = self.fit_summary['mean'].iloc[0]
-            coef = self.fit_summary['mean'].iloc[1:len(self.species_cols) + 1]
-            self.lidar_coef_dict = dict(zip(self.species_cols, coef))
-        else:
-            self.fit_summary.index = self.species_cols + ['sigma']
-            self.intercept = 0
-            coef = self.fit_summary['mean'].iloc[:len(self.species_cols)]
-            self.lidar_coef_dict = dict(zip(self.species_cols, coef))
+        self.fit_summary.index = self.species_cols + ['sigma']
+        self.intercept = 0
+        coef = self.fit_summary['mean'].iloc[:len(self.species_cols)]
+        self.lidar_coef_dict = dict(zip(self.species_cols, coef))
         #print(self.fit_summary)
 
         self.mass_ratio_unadj_dict = dict(zip(self.species_cols, leaf_mass))
