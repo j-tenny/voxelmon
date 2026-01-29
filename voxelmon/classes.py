@@ -1896,6 +1896,7 @@ class BulkDensityProfileModelFitter:
         return obj
 
     def fit_mass_ratio_bayesian(self,
+                                leaf_mass:np.ndarray,
                                  prior_mean: np.ndarray,
                                  prior_std: np.ndarray,
                                  sigma_residuals:float = .02,
@@ -1906,7 +1907,8 @@ class BulkDensityProfileModelFitter:
         Fit self with Bayesian linear regression using prior coefficients and new observations
 
         Args:
-            prior_mean: Prior estimates of the mass:lidar value coefficients (e.g. LMA estimates from previous studies).
+            leaf_mass: Estimates of the mass:lidar value coefficients by species (e.g. LMA estimates from previous studies).
+            prior_mean: Prior estimates of the feature coefficient by species
             prior_std: Estimated standard deviation for prior coefficients. If uncertain, use large value
                 representing weakly informative prior.
             fit_intercept: Use intercept in CBD prediction equation.
@@ -1917,12 +1919,16 @@ class BulkDensityProfileModelFitter:
         import pymc as pm
         import arviz as az
 
-        # Get species proportions
+        # Get foliage proportion by species
         X = self.profile_data[self.species_cols].to_numpy()
 
-        # Scale lidar value by species proportions
+        # Get PAD by species by scaling lidar value by species proportions
         pad = self.profile_data[self.lidar_value_col].to_numpy().reshape(-1, 1)
         X *= pad
+
+        # Get "uncalibrated" lidar estimate of CBD by multiplying PAD by LMA for each species
+        leaf_mass = np.array(leaf_mass)
+        X *= leaf_mass
 
         y = self.profile_data[self.cbd_col].to_numpy()
 
@@ -1939,6 +1945,7 @@ class BulkDensityProfileModelFitter:
             if fit_intercept:
                 # Prior for the intercept
                 intercept = pm.Normal('intercept', mu=0, sigma=sigma_intercept)
+
                 Y_obs = pm.Normal('Y_obs', mu=intercept + pm.math.dot(X, betas), sigma=sigma, observed=y)
             else:
                 Y_obs = pm.Normal('Y_obs', mu=pm.math.dot(X, betas), sigma=sigma, observed=y)
@@ -1955,12 +1962,17 @@ class BulkDensityProfileModelFitter:
         if fit_intercept:
             self.fit_summary.index = ['intercept'] + self.species_cols + ['sigma']
             self.intercept = self.fit_summary['mean'].iloc[0]
-            self.mass_ratio_dict = dict(zip(self.species_cols, self.fit_summary['mean'].iloc[1:len(self.species_cols) + 1]))
+            coef = self.fit_summary['mean'].iloc[1:len(self.species_cols) + 1]
+            self.lidar_coef_dict = dict(zip(self.species_cols, coef))
         else:
             self.fit_summary.index = self.species_cols + ['sigma']
             self.intercept = 0
-            self.mass_ratio_dict = dict(zip(self.species_cols, self.fit_summary['mean'].iloc[:len(self.species_cols)]))
+            coef = self.fit_summary['mean'].iloc[:len(self.species_cols)]
+            self.lidar_coef_dict = dict(zip(self.species_cols, coef))
         #print(self.fit_summary)
+
+        self.mass_ratio_unadj_dict = dict(zip(self.species_cols, leaf_mass))
+        self.mass_ratio_dict = dict(zip(self.species_cols, coef * leaf_mass))
 
         if two_stage_fit:
             import statsmodels.api as sm
@@ -1980,6 +1992,73 @@ class BulkDensityProfileModelFitter:
             lm = sm.OLS(obs_plot_sum,pred_plot_sum).fit()
             self.adj_factor = lm.params[0]
             for species in self.mass_ratio_dict:
+                self.lidar_coef_dict[species] *= self.adj_factor
+                self.mass_ratio_dict[species] *= self.adj_factor
+
+        #TODO: Fix fit with intercept
+
+        #TODO: Standardize outputs
+
+        #TODO: Reimplement two-stage fit
+
+    def fit_mass_ratio_ols(self,
+                        leaf_mass:np.ndarray,
+                         fit_intercept: bool = False,
+                         two_stage_fit: bool = False):
+        """
+        Fit self with ordinary least squares linear regression
+
+        Args:
+            leaf_mass: Estimates of the mass:lidar value coefficients by species (e.g. LMA estimates from previous studies).
+            fit_intercept: Use intercept in CBD prediction equation.
+            two_stage_fit: Adjust mass ratio values to reduce bias in total canopy fuel load predictions
+
+        Returns: None
+        """
+        from sklearn.linear_model import LinearRegression
+
+        # Get foliage proportion by species
+        X = self.profile_data[self.species_cols].to_numpy()
+
+        # Get PAD by species by scaling lidar value by species proportions
+        pad = self.profile_data[self.lidar_value_col].to_numpy().reshape(-1, 1)
+        X *= pad
+
+        # Get "uncalibrated" lidar estimate of CBD by multiplying PAD by LMA for each species
+        leaf_mass = np.array(leaf_mass)
+        X *= leaf_mass
+
+        y = self.profile_data[self.cbd_col].to_numpy()
+
+        lm = LinearRegression(fit_intercept=fit_intercept, positive=True).fit(X, y)
+
+        self.intercept = lm.intercept_
+        coef = lm.coef_
+        self.lidar_coef_dict = dict(zip(self.species_cols, coef))
+        #print(self.fit_summary)
+
+        self.mass_ratio_unadj_dict = dict(zip(self.species_cols, leaf_mass))
+        self.mass_ratio_dict = dict(zip(self.species_cols, coef * leaf_mass))
+
+        if two_stage_fit:
+            import statsmodels.api as sm
+            # Convert plot_id strings to vector of integers
+            _, plot_id_arr = np.unique(self.profile_data[self.plot_id_col], return_inverse=True)
+            # Get predicted cbd of each bin
+            models = self.to_models()
+            y_pred = np.zeros(y.shape, dtype=float)
+            for veg_type in self.profile_data[self.class_id_col].unique():
+                model = models[veg_type]
+                class_mask = self.profile_data[self.class_id_col] == veg_type
+                y_pred[class_mask] = model.predict(self.profile_data[class_mask],
+                                                     self.height_col, self.lidar_value_col, self.plot_id_col)
+            # Get sum of bins in each plot (pred and obs)
+            pred_plot_sum = np.bincount(plot_id_arr, weights=y_pred)
+            obs_plot_sum = np.bincount(plot_id_arr, weights=y)
+            lm = sm.OLS(obs_plot_sum,pred_plot_sum).fit()
+            self.adj_factor = lm.params[0]
+            for species in self.mass_ratio_dict:
+                self.lidar_coef_dict[species] *= self.adj_factor
                 self.mass_ratio_dict[species] *= self.adj_factor
 
         #TODO: Fix fit with intercept
