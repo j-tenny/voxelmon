@@ -54,9 +54,9 @@ def bin2D(pulses,function,cellSize,asArray = True,binExtents=None):
     # if binExtents is None, extents are automatically pulled from pulses extents, may need to clip first
     import polars as pl
     import numpy as np
-    try:
+    if hasattr(pulses,'xyz'):
         points_df = pl.DataFrame({'X':pulses.xyz[:,0],'Y':pulses.xyz[:,1],'Z':pulses.xyz[:,2]})
-    except:
+    else:
         points_df = pl.DataFrame({'X':pulses[:,0],'Y':pulses[:,1],'Z':pulses[:,2]})
 
     points_df = points_df.with_columns(pl.col('X').floordiv(cellSize).cast(pl.Int32).alias('xBin'),
@@ -79,6 +79,31 @@ def bin2D(pulses,function,cellSize,asArray = True,binExtents=None):
         return result[:, -1].to_numpy().reshape(binExtents[2]-binExtents[0],binExtents[3]-binExtents[1],order='f')
     else:
         return result
+
+def bin2D_da(pulses,function,cellSize):
+    # Function should be from polars and should specify a column name x, y, or z, e.g. pl.min('Z')
+
+    import polars as pl
+    import xarray as xr
+
+    if hasattr(pulses,'xyz'):
+        points_df = pl.DataFrame({'X':pulses.xyz[:,0],'Y':pulses.xyz[:,1],'Z':pulses.xyz[:,2]})
+    else:
+        points_df = pl.DataFrame(pulses)
+
+    points_df = points_df.with_columns(pl.col('X').floordiv(cellSize).cast(pl.Int32).alias('X_BIN'),
+                                       pl.col('Y').floordiv(cellSize).cast(pl.Int32).alias('Y_BIN'))
+
+    bin_vals = points_df.drop_nulls().group_by(['X_BIN','Y_BIN']).agg(function)
+
+    bin_vals = bin_vals.with_columns((pl.col('X_BIN') * cellSize + cellSize/2).alias('X'),
+                                     (pl.col('Y_BIN') * cellSize + cellSize/2).alias('Y'))
+
+    bin_vals = bin_vals.to_pandas().set_index(['X','Y'])
+
+    bin_vals = xr.DataArray.from_series(bin_vals.iloc[:,-1])
+
+    return bin_vals
 
 
 def bin3D(pulses, function, cellSize,asArray = True, binExtents=None):
