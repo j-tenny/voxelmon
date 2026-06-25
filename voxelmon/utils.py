@@ -789,9 +789,9 @@ def interp2D_w_cubic_extrapolation(xy_train, values_train, xy_predict):
 
 def interpolate_flightpath(points, flightpath):
     from scipy.interpolate import interp1d
-    interpolator_x = interp1d(flightpath['GpsTime'].to_numpy(),flightpath['X'].to_numpy())
-    interpolator_y = interp1d(flightpath['GpsTime'].to_numpy(), flightpath['Y'].to_numpy())
-    interpolator_z = interp1d(flightpath['GpsTime'].to_numpy(), flightpath['Z'].to_numpy())
+    interpolator_x = interp1d(flightpath['GpsTime'].to_numpy(), flightpath['X'].to_numpy(), bounds_error=False, fill_value=(flightpath['X'].min(),flightpath['X'].max()))
+    interpolator_y = interp1d(flightpath['GpsTime'].to_numpy(), flightpath['Y'].to_numpy(), bounds_error=False, fill_value=(flightpath['Y'].min(),flightpath['Y'].max()))
+    interpolator_z = interp1d(flightpath['GpsTime'].to_numpy(), flightpath['Z'].to_numpy(), bounds_error=False, fill_value=(flightpath['Z'].min(),flightpath['Z'].max()))
     x = interpolator_x(points['GpsTime'])
     y = interpolator_y(points['GpsTime'])
     z = interpolator_z(points['GpsTime'])

@@ -2,6 +2,7 @@ import numpy as np
 import polars as pl
 import pandas as pd
 import pandas as pd
+import seaborn
 from numba import jit,njit,guvectorize,prange,float32,void,uint16,int64,uint32,int32,float64
 from typing import Union, Sequence, Tuple
 
@@ -141,6 +142,7 @@ class Grid:
 
     def calculate_pulse_metrics(self,pulses:'Pulses', G = .5) -> None:
         """Trace lidar pulses through grid to estimate PAD and other metrics"""
+        import warnings
 
         # Define function for voxel traversal algorithm, implemented in parallel with numba just-in-time compiler
         @njit([void(float64[:, :], float64, float64[:], float64[:, :, :], float64[:, :, :], float64[:, :, :])],parallel=True)
@@ -157,12 +159,15 @@ class Grid:
 
             INF = 1000000000000
 
+            # Ensure weights are between 0 and 1
+            pulses[:, 9] = np.clip(pulses[:, 9], 0, 1)
+
             for i in prange(pulses.shape[0]):
 
                 # Find which cell the ray ends in
-                cellXEnd = np.uint32((pulses[i, 3] - gridExtents[0]) // cellSize)
-                cellYEnd = np.uint32((pulses[i, 4] - gridExtents[1]) // cellSize)
-                cellZEnd = np.uint32((pulses[i, 5] - gridExtents[2]) // cellSize)
+                cellXEnd = np.int32((pulses[i, 3] - gridExtents[0]) // cellSize)
+                cellYEnd = np.int32((pulses[i, 4] - gridExtents[1]) // cellSize)
+                cellZEnd = np.int32((pulses[i, 5] - gridExtents[2]) // cellSize)
 
                 # Find which cell the ray starts in
                 xstart = pulses[i, 0]
@@ -173,6 +178,7 @@ class Grid:
                         (xstart <= gridExtents[3]) & (ystart <= gridExtents[4]) & (zstart <= gridExtents[5])):
 
                     # Origin outside bounds. Try to calculate intersection with grid.
+                    # Find t1 and t2 as time (in grid dimensions) where pulse enters and exits grid.
 
                     xdir = pulses[i, 6]
                     ydir = pulses[i, 7]
@@ -217,18 +223,21 @@ class Grid:
                     if t1 > t2:
                         continue  # No intersection
 
-                    # Update starting coordinate such that it is on the edge of the grid
+                    # Update starting coordinate such that it is just inside the edge of the grid
+                    # Add tiny increment to t1 to avoid floating point errors that can occur if point is on edge of grid
+                    t1 += 1e-10
                     xstart = np.float64(xstart + t1 * xdir)
                     ystart = np.float64(ystart + t1 * ydir)
                     zstart = np.float64(zstart + t1 * zdir)
 
-                if not ((xstart >= gridExtents[0]) & (ystart >= gridExtents[1]) & (zstart >= gridExtents[2]) &
-                        (xstart <= gridExtents[3]) & (ystart <= gridExtents[4]) & (zstart <= gridExtents[5])):
-                    continue
+                # # Check that pulse is actually in grid to avoid grid index error
+                # if not ((xstart >= gridExtents[0]) & (ystart >= gridExtents[1]) & (zstart >= gridExtents[2]) &
+                #         (xstart <= gridExtents[3]) & (ystart <= gridExtents[4]) & (zstart <= gridExtents[5])):
+                #     continue
 
-                cellX = np.uint32((xstart - gridExtents[0]) // cellSize)
-                cellY = np.uint32((ystart - gridExtents[1]) // cellSize)
-                cellZ = np.uint32((zstart - gridExtents[2]) // cellSize)
+                cellX = np.int32((xstart - gridExtents[0]) // cellSize)
+                cellY = np.int32((ystart - gridExtents[1]) // cellSize)
+                cellZ = np.int32((zstart - gridExtents[2]) // cellSize)
 
                 # Calculate tmax as the number of timesteps to reach edge of next voxel.
                 # Account for travelling towards upper bounds of voxels or lower bounds of voxels
@@ -303,12 +312,18 @@ class Grid:
         voxel_traversal(pulses.array, self.cell_size, self.extents, self.p_directed, self.p_transmitted,
                         self.p_intercepted)
 
+        warnings.filterwarnings("ignore")
         meanPathLength = .843 * self.cell_size  # Correction for unequal path lengths from Grau et al 2017
         self.occlusion = 1 - (self.p_intercepted + self.p_transmitted) / self.p_directed
         self.occlusion[~np.isfinite(self.occlusion)] = 1
         self.pad = -np.log(1 - (self.p_intercepted / (self.p_intercepted + self.p_transmitted))) / (G * meanPathLength)
         self.occlusion[~np.isfinite(self.pad)] = 1
         self.pad[~np.isfinite(self.pad)] = 0
+
+        # Validate result
+        if (np.sum(self.p_directed > 0) / len(pulses.df)) < .9:
+            raise ValueError("More than 10% of pulses not found in grid. This likely represents a processing error.")
+
 
     def add_pulse_metrics(self,grid, G = .5) -> None:
         """Combine pulse metrics from two Grid objects. Grids must overlap exactly (same extents, same cell size)."""
@@ -331,6 +346,27 @@ class Grid:
         presence = (self.pad>0).astype(np.float32)
         count = ndimage.uniform_filter(presence, window_radius) * window_radius ** 2
         self.pad[count < min_count_present] = 0
+
+    def create_dem_preclassified(self, pulses):
+        import polars as pl
+        from voxelmon.utils import interp2D_w_cubic_extrapolation
+
+        points = pulses.df.filter(pl.col('Classification') == 2).select(['X','Y','Z'])
+        # Get lowest point in base grid
+        grid = self.bin2D(points,pl.min('Z'))
+
+        # Create a grid of coordinates corresponding to the array indices
+        x, y = np.indices(grid.shape)
+
+        # Interpolate remaining missing values
+        maskMissing = np.isnan(grid)
+        pointsValid = np.array((x[~maskMissing], y[~maskMissing])).T
+        valuesValid = grid[~maskMissing]
+        pointsMissing = np.array((x[maskMissing], y[maskMissing])).T
+        grid[maskMissing] = interp2D_w_cubic_extrapolation(pointsValid, valuesValid, pointsMissing)
+
+        self.dem = grid
+        self.hag = (self.centers[:,2] - np.tile(grid.flatten(),self.shape[2])).reshape(self.shape,order='F')
 
 
     def create_dem_decreasing_window(self, pulses:'Pulses', window_sizes:Sequence[float] = [5, 2.5, 1, .5],
@@ -359,7 +395,7 @@ class Grid:
 
         # Get lowest point in base grid
         grid = self.bin2D(points,pl.min('Z'))
-        grid[np.isnan(grid)]=99
+        grid[np.isnan(grid)]=9999
         centers = self.centers_xy
         # Create a grid of coordinates corresponding to the array indices
         x, y = np.indices(grid.shape)
@@ -376,7 +412,7 @@ class Grid:
             grid = scipy.ndimage.percentile_filter(grid,.25,windowShape,mode='nearest')
 
             # Interpolate remaining missing values
-            maskMissing = grid == 99
+            maskMissing = grid == 9999
             pointsValid = np.array((x[~maskMissing], y[~maskMissing])).T
             valuesValid = grid[~maskMissing]
             pointsMissing = np.array((x[maskMissing], y[maskMissing])).T
@@ -392,10 +428,10 @@ class Grid:
             # Remove points that are not near the ground and recalculate lowest points
             points = points.filter(pl.col('Z') <= pl.col('ground').add(heightThresh))
             grid = self.bin2D(points, pl.min('Z'))
-            grid[np.isnan(grid)] = 99
+            grid[np.isnan(grid)] = 9999
 
         # Interpolate remaining missing values
-        maskMissing = grid == 99
+        maskMissing = grid == 9999
         pointsValid = np.array((x[~maskMissing], y[~maskMissing])).T
         valuesValid = grid[~maskMissing]
         pointsMissing = np.array((x[maskMissing], y[maskMissing])).T
@@ -639,7 +675,7 @@ class Pulses:
 
         if 'Weight' not in pulses_df.columns:
             if 'NumberOfReturns' in self.df.columns:
-                self.df = self.df.with_columns(pl.lit(1).truediv(pl.col('NumberOfReturns')).alias('Weight'))
+                self.df = self.df.with_columns(pl.lit(1).truediv(pl.col('NumberOfReturns')).clip(0,1).alias('Weight'))
             else:
                 self.df = self.df.with_columns(pl.lit(1).alias('Weight'))
 
@@ -780,15 +816,67 @@ class ALS:
         als.crs = crs
         return als
 
-    def estimate_flightpath(self, min_separation:float=2,
+    def estimate_flightpath(self,
+                            flight_polygons: 'geopandas.GeoDataFrame' = None,
+                            gps_start_col:str = None,
+                            gps_end_col:str = None,
+                            elev_agl:float=None,
+                            unconstrained=False,
+                            min_separation:float=2,
                             time_bin_size:float=.5,
-                            fit_line:bool=True,
                             min_z_q:float = .75,
                             flightline_t_break:float=5)->'pl.DataFrame':
-        """Estimate flightpath by triangulating position from rays drawn between first and last return
+        """Attempt to automagically estimate flightpaths from available information
 
-        This implementation is optimized for tiled data. It assumes that each flight path can be represented by a
-        straight line at a constant altitude above MSL (not ground).
+        Part 1: Get XY coordinates of flightpath:
+
+        Algorithm 1a -- If flight_polygons, gps_start_col, and gps_end_col are provided:
+
+            1a.1. Intersect flight_polygons with ALS points
+            1a.2. Estimate flightpaths from centerline of flight polygons
+            1a.3. Assign returns to flightpaths if GPS time of return is within values provided in gps_start_col and gps_end_col
+
+        Algorithm 1b -- If only flight_polygons are provided:
+
+            1b.1. Intersect flight_polygons with ALS points
+            1b.2. Estimate flightpaths from centerline of flight polygons
+            1b.3. Segment returns by flightline based on gaps in GPS time between returns
+            1b.4. Run convergence algorithm on returns (described below)
+            1b.5. Find flightline from flight_polygons that best fits the convergence points
+
+        Algorithm 1c -- If flight_polygons are not provided:
+
+            1c.1. Segment returns by flightline based on gaps in GPS time between returns
+            1c.2. Run convergence algorithm on returns (described below)
+            1c.3. Filter convergence points to those above the min_z_q quantile of convergence point elevation (helps reduce noise before fitting a line)
+            1c.4. If unconstrained==False, fit a line to the convergence points for each flightline using least squares. Otherwise, return all convergence points.
+
+        Part 2: Get flightpath z position:
+
+        Algorithm 2a -- If elev_agl is provided:
+
+            2a.1. Divide flightpath and associated returns into time bins of time_bin_size
+            2a.2. Estimate ground elevation for returns in each time bin
+            2a.3. Set flightpath elevation to mean of ground elevation + elev_agl
+
+        Algorithm 2b -- If elev_agl is not provided and unconstrained==False:
+
+            2b.1. Elevation is set using mean elevation of convergence points
+
+        Algorithm 2c -- If elev_agl is not provided and unconstrained==True:
+
+            2c.1. Raw elevation of convergence points will be used
+
+        Part 3: Get origin point for each return:
+
+            3.1. Interpolate flight path/convergence point x, y, z by GPS time to get origin point for each return
+
+        Intermediate algorithm -- get convergence points:
+
+            1. Points within the same flightline are segmented by time_bin_size
+            2. Pulses with multiple returns where the first and last return are separated by more than min_separation
+            are identified. A line is traced connecting each first/last pair. For each time bin, a convergence point is
+            identified as the point which minimizes the least squares distance to all lines.
 
         Args:
             min_separation (float): Minimum separation distance between first and last return considered when drawing rays
@@ -803,8 +891,9 @@ class ALS:
         from concurrent.futures import ThreadPoolExecutor
         from sklearn.linear_model import LinearRegression
         from voxelmon.utils import interpolate_flightpath
-
-        self.points = self.points.sort(['GpsTime','ReturnNumber'])
+        from shapely.geometry import LineString, Polygon
+        import geopandas as gpd
+        import matplotlib.pyplot as plt
 
         def split_flightlines(points):
             gps_time_arr = points['GpsTime'].to_numpy()
@@ -817,19 +906,43 @@ class ALS:
             point_views.append(points[prev_i:,:])
             return point_views
 
-        points_views = split_flightlines(self.points)
+        def get_polygon_centerline(poly: 'shapely.geometry.Polygon'):
+            from shapely.geometry import LineString
+            # Get coords of rectangle fit to flightline polygon, find slope of long side
+            coords = poly.minimum_rotated_rectangle.boundary.coords
+            longest = -1
+            for coord, next_coord in zip(coords[:-1], coords[1:]):
+                length = ((next_coord[0] - coord[0]) ** 2 + (next_coord[1] - coord[1]) ** 2) ** .5
+                if length > longest:
+                    longest = length
+                    dxdy = np.array((next_coord[0] - coord[0], next_coord[1] - coord[1])) / length
+
+            # Make line geometry inside polygon
+            centroid = np.array([poly.centroid.coords.xy[0][0], poly.centroid.coords.xy[1][0]])
+            xy0 = centroid + dxdy * poly.boundary.length / 2
+            xy1 = centroid - dxdy * poly.boundary.length / 2
+            line = LineString([xy0, xy1]).intersection(poly)
+            return line
+
+        def get_time_along_line(line_points, returns):
+            from sklearn.neighbors import KNeighborsRegressor
+            model = KNeighborsRegressor(n_neighbors=min(100,len(returns))).fit(returns[['X','Y']].to_numpy(), returns['GpsTime'].to_numpy())
+            flight_gps_time = model.predict(line_points[:,0:2])
+            return flight_gps_time
+
+        def get_elev(line_points,elev_agl,returns):
+            from sklearn.neighbors import KNeighborsRegressor
+            ground = returns.filter(returns['Classification']==2)
+            model = KNeighborsRegressor(n_neighbors=min(100,len(ground))).fit(ground[['X','Y']].to_numpy(), ground['Z'].to_numpy())
+            ground_elev = model.predict(line_points[:,0:2])
+            return ground_elev + elev_agl
 
         def get_convergence_points(points):
-            points_all = points[['X','Y','Z']].to_numpy()
-            return_number_all = points['ReturnNumber'].to_numpy()
-            gps_time = points['GpsTime'].to_numpy()
-            start_time = gps_time.min()
-            end_time = gps_time.max()
             flight_points = []
-            for time in np.arange(start_time,end_time+time_bin_size, time_bin_size):
-                time_mask = (gps_time >= time) & (gps_time < time + time_bin_size)
-                points_arr = points_all[time_mask]
-                return_number = return_number_all[time_mask]
+            for time_bin, points_group in points.group_by('TimeBin'):
+                points_arr = points_group[['X','Y','Z']].to_numpy()
+                return_number = points_group['ReturnNumber'].to_numpy()
+                time = float(time_bin[0] * time_bin_size)
                 first = []
                 last = []
                 count = 0
@@ -873,32 +986,91 @@ class ALS:
                     flight_points.append(p)
             points = np.stack(flight_points)
             points = points[points[:,2]>=np.quantile(points[:,2],min_z_q),:]
-            if fit_line:
-                lmx = LinearRegression().fit(points[:,3].reshape(-1,1),points[:, 0].reshape(-1, 1))
-                lmy = LinearRegression().fit(points[:, 3].reshape(-1, 1), points[:, 1].reshape(-1, 1))
-                #lmz = LinearRegression().fit(points[:, 3].reshape(-1, 1), points[:, 2].reshape(-1, 1))
-                gps_time_out = np.linspace(gps_time.min(),gps_time.max(),100).reshape(-1,1)
-                x = lmx.predict(gps_time_out)
-                y = lmy.predict(gps_time_out)
-                #z = lmz.predict(gps_time_out)
-                z = np.ones_like(x) * points[:, 2].mean()
-                points = np.concatenate([x,y,z,gps_time_out],axis=1)
-
 
             return points
 
-        with ThreadPoolExecutor() as executor:
-            flightlines = list(executor.map(get_convergence_points, points_views))
+        # Preprocess flightline data if available
+        if flight_polygons is not None:
+            # Find flightlines that overlap point cloud
+            flight_polygons = flight_polygons.to_crs(crs=self.crs)
+            ll = self.points[['X', 'Y']].min().to_numpy()[0, :]
+            ur = self.points[['X', 'Y']].max().to_numpy()[0, :]
+            tile_geom = Polygon.from_bounds(ll[0], ll[1], ur[0], ur[1])
+            flights_x = flight_polygons[flight_polygons.intersects(tile_geom)]
+            flights_x = gpd.clip(flights_x, tile_geom.buffer(500))
+            flights = [get_polygon_centerline(poly) for poly in flights_x.geometry]
+            flights = gpd.GeoDataFrame(flights_x.drop(columns='geometry'),geometry=flights,crs=self.crs)
+
+        self.points = self.points.sort(['GpsTime', 'ReturnNumber'])
+        self.points = self.points.with_columns(pl.col('GpsTime').floordiv(time_bin_size).alias('TimeBin'))
+        if gps_start_col is not None and gps_end_col is not None:
+            points_views = []
+            flightlines = []
+            for idx, row in flights.iterrows():
+                # Segment points by GPS time from flight polygons
+                gps_start = row[gps_start_col]
+                gps_end = row[gps_end_col]
+                returns = self.points.filter((self.points['GpsTime'] >= gps_start) & (self.points['GpsTime'] <= gps_end))
+                if len(returns) > 0:
+                    points_views.append(returns)
+                    # Construct flightline points for this flight
+                    line_geom = row['geometry']
+                    flightpoints = line_geom.line_interpolate_point(np.linspace(0,line_geom.length,200,endpoint=True))
+                    flightpoints = np.array([(point.x,point.y) for point in flightpoints])
+                    # Interpolate GPS time along flight path
+                    flight_times = get_time_along_line(flightpoints,returns)
+                    elev = get_elev(flightpoints,elev_agl,returns)
+                    flightline = polars.DataFrame({'X': flightpoints[:, 0], 'Y': flightpoints[:, 1], 'Z': elev,
+                                      'GpsTime': flight_times, 'FlightLine': idx})
+                    flightlines.append(flightline)
+            flightlines = polars.concat(flightlines)
+            self.origin = interpolate_flightpath(self.points, flightlines)
+            return flightlines
+
+        else:
+            # Segment returns by flightline based on gaps in GPS time
+            points_views = split_flightlines(self.points)
+            # Get convergence points
+            with ThreadPoolExecutor() as executor:
+                flightlines = list(executor.map(get_convergence_points, points_views))
 
 
         for i in range(len(flightlines)):
-            flight_points = flightlines[i]
-            flightlines[i] = polars.DataFrame({'X':flight_points[:,0],'Y':flight_points[:,1], 'Z':flight_points[:,2],
-                                              'GpsTime':flight_points[:,3],'FlightLine':i})
+            cpoints = flightlines[i] # Convergence points for this flightline
+            returns = points_views[i] # Lidar returns for this flightline
 
-        flightpath = polars.concat(flightlines)
-        self.origin = interpolate_flightpath(self.points,flightpath)
-        return flightpath
+            if elev_agl is not None:
+                cpoints = get_elev(cpoints, elev_agl, returns)
+
+            if flight_polygons is not None:
+                # Find flightline that is closest to convergence points
+                cpoints_geom = gpd.points_from_xy(cpoints[:, 0], cpoints[:, 1])
+                ls = np.inf
+                matching_flight = None
+                for flight in flights.geometry:
+                    sd = cpoints_geom.distance(flight)**2
+                    if sd < ls:
+                        ls = sd
+                        matching_flight = flight
+                # Interpolate GPS time along flight line
+                matching_flight = get_gps_along_line(matching_flight)
+            elif not unconstrained:
+                lmx = LinearRegression().fit(cpoints[:,3].reshape(-1,1),cpoints[:, 0].reshape(-1, 1))
+                lmy = LinearRegression().fit(cpoints[:, 3].reshape(-1, 1), cpoints[:, 1].reshape(-1, 1))
+                gps_time_out = np.linspace(float(cpoints['GpsTime'].min()),float(cpoints['GpsTime'].max()),100).reshape(-1,1)
+                x = lmx.predict(gps_time_out)
+                y = lmy.predict(gps_time_out)
+                z = np.ones_like(x) * cpoints[:, 2].mean()
+                cpoints = np.concatenate([x,y,z,gps_time_out],axis=1)
+
+            flightlines[i] = polars.DataFrame({'X': cpoints[:, 0], 'Y': cpoints[:, 1], 'Z': cpoints[:, 2],
+                                               'GpsTime': cpoints[:, 3], 'FlightLine': i})
+
+
+
+        flightlines = polars.concat(flightlines)
+        self.origin = interpolate_flightpath(self.points,flightlines)
+        return flightlines
 
     def simple_pad(self, bin_size_xy = 10, bin_size_z = 2, min_height = 1, extinction_coefficient=.5, return_type='polars', return_counts=False):
         """Estimate plant area density with assumption that pulses were directed straight down.
@@ -1024,6 +1196,7 @@ class ALS:
                                    extents:Union[Sequence[float],None] = None,
                                    max_occlusion=.8,
                                    sigma1=0,
+                                   fill_occlusion=False,
                                    min_pad_foliage=.01,
                                    max_pad_foliage=6,
                                    export_dem=True,
@@ -1108,6 +1281,12 @@ class ALS:
         _default_folder_setup(export_folder, pad_grid_dir=export_pad_grid, dem_dir=export_dem, points_dir=False,
                               pad_profile_dir=export_pad_profile, plot_summary_dir=export_plot_summary)
 
+        center_x, center_y, center_z = self.points[['X','Y','Z']].mean().to_numpy()[0]
+        self.points = self.points.with_columns(pl.col('X') - center_x, pl.col('Y') - center_y, pl.col('Z') - center_z)
+        self.origin[:,0] -= center_x
+        self.origin[:,1] -= center_y
+        self.origin[:,2] -= center_z
+
         pulses = Pulses.from_point_cloud_array(self.points, origin=self.origin)
 
         if extents is None:
@@ -1119,12 +1298,28 @@ class ALS:
 
         grid = Grid(extents=extents, cell_size=cell_size)
 
-        grid.create_dem_decreasing_window(pulses_thin,window_sizes=[5,2.5,1],height_thresholds=[2.5,1.25,.5])
+        grid.create_dem_preclassified(pulses_thin)
+
+        # grid.create_dem_decreasing_window(pulses_thin,window_sizes=[5,2.5,1],height_thresholds=[2.5,1.25,.5])
 
         grid.calculate_pulse_metrics(pulses)
 
+        # grid.centers[:,0]+=center_x
+        # grid.centers[:,1]+=center_y
+        # grid.centers[:,2]+=center_z
+        # grid.centers_xy[:,0]+=center_x
+        # grid.centers_xy[:,1]+=center_y
+        #
+        # grid.extents[0]+=center_x
+        # grid.extents[1]+=center_y
+        # grid.extents[2]+=center_z
+        # grid.extents[3]+=center_x
+        # grid.extents[4]+=center_y
+        # grid.extents[5]+=center_z
+        # grid.dem+=center_z
+
         profile, summary = _default_postprocessing(grid=grid, plot_name=plot_name, export_folder=export_folder,
-                                                   plot_radius=None, max_occlusion=max_occlusion, fill_occlusion=True,
+                                                   plot_radius=None, max_occlusion=max_occlusion, fill_occlusion=fill_occlusion,
                                                    sigma1=sigma1, min_pad_foliage=min_pad_foliage, max_pad_foliage=max_pad_foliage,
                                                    export_pad_grid=export_pad_grid, export_dem=export_dem,
                                                    export_pad_profile=export_pad_profile, export_plot_summary=export_plot_summary)
