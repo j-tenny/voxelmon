@@ -94,7 +94,6 @@ class ParameterForm(QWidget):
 
         self.hide()
 
-        #voxelmon.visualize_voxels(**kwargs)
 
         QTimer.singleShot(0, lambda: voxelmon.visualize_voxels(**kwargs))
 

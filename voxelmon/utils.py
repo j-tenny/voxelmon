@@ -54,9 +54,9 @@ def bin2D(pulses,function,cellSize,asArray = True,binExtents=None):
     # if binExtents is None, extents are automatically pulled from pulses extents, may need to clip first
     import polars as pl
     import numpy as np
-    try:
+    if hasattr(pulses,'xyz'):
         points_df = pl.DataFrame({'X':pulses.xyz[:,0],'Y':pulses.xyz[:,1],'Z':pulses.xyz[:,2]})
-    except:
+    else:
         points_df = pl.DataFrame({'X':pulses[:,0],'Y':pulses[:,1],'Z':pulses[:,2]})
 
     points_df = points_df.with_columns(pl.col('X').floordiv(cellSize).cast(pl.Int32).alias('xBin'),
@@ -79,6 +79,31 @@ def bin2D(pulses,function,cellSize,asArray = True,binExtents=None):
         return result[:, -1].to_numpy().reshape(binExtents[2]-binExtents[0],binExtents[3]-binExtents[1],order='f')
     else:
         return result
+
+def bin2D_da(pulses,function,cellSize):
+    # Function should be from polars and should specify a column name x, y, or z, e.g. pl.min('Z')
+
+    import polars as pl
+    import xarray as xr
+
+    if hasattr(pulses,'xyz'):
+        points_df = pl.DataFrame({'X':pulses.xyz[:,0],'Y':pulses.xyz[:,1],'Z':pulses.xyz[:,2]})
+    else:
+        points_df = pl.DataFrame(pulses)
+
+    points_df = points_df.with_columns(pl.col('X').floordiv(cellSize).cast(pl.Int32).alias('X_BIN'),
+                                       pl.col('Y').floordiv(cellSize).cast(pl.Int32).alias('Y_BIN'))
+
+    bin_vals = points_df.drop_nulls().group_by(['X_BIN','Y_BIN']).agg(function)
+
+    bin_vals = bin_vals.with_columns((pl.col('X_BIN') * cellSize + cellSize/2).alias('X'),
+                                     (pl.col('Y_BIN') * cellSize + cellSize/2).alias('Y'))
+
+    bin_vals = bin_vals.to_pandas().set_index(['X','Y'])
+
+    bin_vals = xr.DataArray.from_series(bin_vals.iloc[:,-1])
+
+    return bin_vals
 
 
 def bin3D(pulses, function, cellSize,asArray = True, binExtents=None):
@@ -126,7 +151,7 @@ def bin3D(pulses, function, cellSize,asArray = True, binExtents=None):
     else:
         return result
 
-def open_file_pdal(filepath,bounds=None,calculate_height=True,reproject_to=None)->Tuple['pl.DataFrame',str]:
+def open_file_pdal(filepath, reader=None, bounds=None,calculate_height=True,reproject_to=None)->Tuple['pl.DataFrame',str]:
     """Read a file to a polars dataframe with pdal. Returns pl.DataFrame and crs
 
     Args:
@@ -142,11 +167,14 @@ def open_file_pdal(filepath,bounds=None,calculate_height=True,reproject_to=None)
 
     result=0
 
+    if reader is None:
+        reader = pdal.Reader
+
     filters = []
     if bounds is not None:
-        filters.append(pdal.Reader(filepath, bounds=bounds))
+        filters.append(reader(filepath, bounds=bounds))
     else:
-        filters.append(pdal.Reader(filepath))
+        filters.append(reader(filepath))
 
     if reproject_to is not None:
         filters.append(pdal.Filter.reprojection(out_srs=reproject_to))
@@ -218,13 +246,16 @@ def normalize(xyz_df,dem_df,cellSize=None):
     return xyz_df
 
 
-def plot_side_view(xyz,direction=0,demPtsNormalize=None,returnData=False):
+def plot_side_view(xyz,direction=0,demPtsNormalize=None,returnData=False, useHAG=False, cellSize=0.1):
     # dir=0=+y, dir=1=+x, dir=2=-y, dir=3=-x
     import polars as pl
     import numpy as np
     import matplotlib.pyplot as plt
 
-    points_df = pl.DataFrame({'X': xyz[:, 0], 'Y': xyz[:, 1], 'Z': xyz[:, 2]})
+    if useHAG:
+        points_df = pl.DataFrame({'X': xyz['X'], 'Y': xyz['Y'], 'Z': xyz['HeightAboveGround']})
+    else:
+        points_df = pl.DataFrame({'X': xyz[:, 0], 'Y': xyz[:, 1], 'Z': xyz[:, 2]})
     if demPtsNormalize is not None:
         points_df = normalize(points_df,demPtsNormalize)
         points_df = points_df.filter(pl.col('Z')>=0)
@@ -235,19 +266,19 @@ def plot_side_view(xyz,direction=0,demPtsNormalize=None,returnData=False):
     extents3D = np.concatenate([mincoords,maxcoords])
 
     if direction == 0:
-        bins = bin3D(points_df, function=pl.min('Y'), cellSize=.1, asArray=True)
+        bins = bin3D(points_df, function=pl.min('Y'), cellSize=cellSize, asArray=True)
         bins = np.nanmin(bins,axis=1)
         extents2D = extents3D[[0,3,2,5]]
     elif direction == 1:
-        bins = bin3D(points_df, function=pl.min('X'), cellSize=.1, asArray=True)
+        bins = bin3D(points_df, function=pl.min('X'), cellSize=cellSize, asArray=True)
         bins = np.nanmin(bins, axis=0)
         extents2D = extents3D[[1, 4, 2, 5]]
     elif direction == 2:
-        bins = bin3D(points_df, function=pl.max('Y'), cellSize=.1, asArray=True)
+        bins = bin3D(points_df, function=pl.max('Y'), cellSize=cellSize, asArray=True)
         bins = np.nanmax(bins, axis=1)
         extents2D = extents3D[[0, 3, 2, 5]]
     else:
-        bins = bin3D(points_df, function=pl.max('X'), cellSize=.1, asArray=True)
+        bins = bin3D(points_df, function=pl.max('X'), cellSize=cellSize, asArray=True)
         bins = np.nanmax(bins, axis=0)
         extents2D = extents3D[[1, 4, 2, 5]]
 
@@ -257,15 +288,44 @@ def plot_side_view(xyz,direction=0,demPtsNormalize=None,returnData=False):
         return plt.imshow(np.rot90(bins),extent=extents2D)
 
 
+def plot_top_view(xyz, demPtsNormalize=None, returnData=False, useHAG=False, cellSize=0.1):
+    # dir=0=+y, dir=1=+x, dir=2=-y, dir=3=-x
+    import polars as pl
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    if useHAG:
+        points_df = pl.DataFrame({'X': xyz['X'], 'Y': xyz['Y'], 'Z': xyz['HeightAboveGround']})
+    else:
+        points_df = pl.DataFrame({'X': xyz[:, 0], 'Y': xyz[:, 1], 'Z': xyz[:, 2]})
+    if demPtsNormalize is not None:
+        points_df = normalize(points_df, demPtsNormalize)
+        points_df = points_df.filter(pl.col('Z') >= 0)
+
+    mincoords = points_df.select(['X', 'Y', 'Z']).min().to_numpy().flatten()
+    maxcoords = points_df.select(['X', 'Y', 'Z']).max().to_numpy().flatten()
+
+    extents3D = np.concatenate([mincoords, maxcoords])
+
+    bins = bin3D(points_df, function=pl.max('Z'), cellSize=cellSize, asArray=True)
+    bins = np.nanmax(bins, axis=2)
+    extents2D = extents3D[[0, 3, 1, 4]]
+
+    if returnData:
+        return [np.rot90(bins), extents2D]
+    else:
+        return plt.imshow(np.rot90(bins), extent=extents2D)
+
+
 def summarize_profiles(profiles, plot_id_col='PLT_CN', height_col='HT',
                        cbd_col='CBD', pad_col = 'PAD',
                        min_height=1., fsg_threshold=.011, ):
-    bin_height = profiles[height_col].iloc[1] - profiles[height_col].iloc[0]
+    bin_height = (profiles[height_col].iloc[1:] - profiles[height_col].iloc[:-1]).mode().iloc[0]
 
+    profiles = profiles[profiles[height_col] >= min_height]
     lai = profiles.groupby(plot_id_col).agg({pad_col: 'sum'})[pad_col] * bin_height
     lai.name = 'LAI'
 
-    profiles = profiles[profiles[height_col] >= min_height]
     profiles_pivot = profiles.pivot(index=plot_id_col, columns=height_col, values=cbd_col).reset_index().fillna(0)
     cbd_arr = profiles_pivot.iloc[:, 1:].to_numpy()
     heights = np.array(profiles_pivot.columns[1:], float)
@@ -729,9 +789,9 @@ def interp2D_w_cubic_extrapolation(xy_train, values_train, xy_predict):
 
 def interpolate_flightpath(points, flightpath):
     from scipy.interpolate import interp1d
-    interpolator_x = interp1d(flightpath['GpsTime'].to_numpy(),flightpath['X'].to_numpy())
-    interpolator_y = interp1d(flightpath['GpsTime'].to_numpy(), flightpath['Y'].to_numpy())
-    interpolator_z = interp1d(flightpath['GpsTime'].to_numpy(), flightpath['Z'].to_numpy())
+    interpolator_x = interp1d(flightpath['GpsTime'].to_numpy(), flightpath['X'].to_numpy(), bounds_error=False, fill_value=(flightpath['X'].min(),flightpath['X'].max()))
+    interpolator_y = interp1d(flightpath['GpsTime'].to_numpy(), flightpath['Y'].to_numpy(), bounds_error=False, fill_value=(flightpath['Y'].min(),flightpath['Y'].max()))
+    interpolator_z = interp1d(flightpath['GpsTime'].to_numpy(), flightpath['Z'].to_numpy(), bounds_error=False, fill_value=(flightpath['Z'].min(),flightpath['Z'].max()))
     x = interpolator_x(points['GpsTime'])
     y = interpolator_y(points['GpsTime'])
     z = interpolator_z(points['GpsTime'])
@@ -797,150 +857,273 @@ def _default_postprocessing(grid, plot_name,
     profile = profile
     return profile,summary
 
-def estimate_foliage_from_treelist(treelist:pd.DataFrame,
-                                   lma_ref_spcd:pd.DataFrame=None,
-                                   lma_ref_spgrpcd:pd.DataFrame=None,
-                                   division="",
-                                   dia_col = "DIA",
-                                   ht_col = "HT",
-                                   tpa_col = "TPA_UNADJ",
-                                   species_col = "SPCD",
-                                   species_group_col = "SPGRPCD",
-                                   foliage_mass_col = "DRYBIO_FOLIAGE",
-                                   input_metric=True,
-                                   output_metric=True):
-    """Make canopy bulk density profile based on tree list and allometric equations from NSVB.
+def rh_from_profile(profile:pd.DataFrame,
+                    quantiles:list[float]=[.1, .2, .3, .4, .5, .6, .7, .8, .9, .98],
+                    min_height:float=2.,
+                    feature_col:str='PAD',
+                    ht_col:str='HT',
+                    plot_id_col:str='PLT_CN',):
+    """Estimate relative foliage heights from leaf (plant) area density profile."""
+
+    percentiles = np.array(quantiles)
+
+    profile = profile[profile[ht_col] >= min_height]
+    lad = profile.pivot(
+        values=[feature_col],
+        index=plot_id_col,
+        columns=ht_col,
+    )
+
+    lad = lad.fillna(0)
+    heights = np.array([col[1] for col in lad.columns])
+
+    bin_size = heights[1] - heights[0]
+
+    lai = lad.sum(1) * bin_size  # bin_size=2m
+    lai.name = 'LAI'
+    lad_max = lad.max(1)
+    ht_lad_max = np.argmax(lad, axis=1) * bin_size  # bin_size=2m
+
+    clad = lad.copy().to_numpy()
+    clad = np.cumsum(clad, axis=1) / clad.sum(1).repeat(clad.shape[1]).reshape(clad.shape)
+
+    rh = np.apply_along_axis(lambda vals: np.interp(percentiles, vals, heights), 1, clad)
+    rh = pd.DataFrame(rh, index=lad.index, columns=[f'RH_{round(p * 100)}' for p in percentiles])
+    rh.insert(0, 'HT_LAD_MAX', ht_lad_max)
+    rh.insert(0, 'LAD_MAX', lad_max)
+    rh.insert(0, 'LAI', lai)
+
+    return rh
+
+
+def simplify_profile_to_row(profile: pd.DataFrame,
+                            values: str = 'PAD',
+                            ht_col: str = 'HT',
+                            plot_id_col: str = 'PLT_CN',
+                            bin_edges=(.1, 1., 2., 4., 7., 11., 16., 22., 29., 37., 46., 56., 67., 79., 92., 999.),
+                            aggfunc='mean',
+                            ):
+    if type(values) == str:
+        values = [values]
+    copy_cols = [plot_id_col, ht_col] + values
+    bin_edges = np.array(bin_edges)
+    profile = profile[copy_cols].copy()
+    profile['HT_BIN'] = pd.cut(profile[ht_col], bin_edges, right=False)
+    summary = profile.pivot_table(index=[plot_id_col, 'HT_BIN'], values=values, aggfunc=aggfunc).reset_index()
+    summary = summary.pivot(index=plot_id_col, columns='HT_BIN', values=values)
+    new_cols = []
+    for col in summary.columns:
+        value_name = col[0]
+        interval_left = str(col[1].left).rstrip('0').rstrip('.').replace('.', '_')
+        interval_right = str(col[1].right).rstrip('0').rstrip('.').replace('.', '_')
+        new_cols.append(f'{value_name}_{interval_left}T{interval_right}')
+    summary.columns = new_cols
+    return summary
+
+
+def create_dem_iterative_height_filter(points,
+                                       crs,
+                                       output_path=None,
+                                       origin = [0,0],
+                                       window_sizes=[5, 2.5, 1, .5],
+                                       height_thresholds=[2.5, 1.25, .5, .25],
+                                       ground_quantile = 0.):
+    """Create a digital elevation model from a point cloud using iterative height filtering
+
+    A ground surface is estimated using the minimum elevation within 2D grid cells with gaps filled using 2D linear
+    interpolation. From this surface, height-above-ground is calculated for all lidar points. Points above a
+    height-above-ground threshold are filtered out. This process is repeated using progressively smaller window sizes
+    and height thresholds.
+
+    Written by Johnathan Tenny (jt893@nau.edu) based on Caster et al 2021 https://doi.org/10.1016/j.geoderma.2021.115369
 
     Args:
-        treelist (pd.DataFrame): table containing tree data, e.g. in FIA format
-        lma_ref_spcd (pd.DataFrame): table containing leaf mass per area values, organized by species code.
-            Must have column "LMA" with units kg/m^2.
-        lma_ref_spgrpcd (pd.DataFrame): table containing leaf mass per area values, organized by species group code.
-            Must have column "LMA" with units kg/m^2.
-    lma_ref_spcd: LMA reference SPCD file
+        points: a numpy array or polars dataframe where the first three columns are x, y, z coordinates of a point cloud
+        crs: coordinate system of point cloud
+        output_path: filepath to write output raster
+        origin: origin of the output DEM
+        window_sizes: list of progressively smaller xy window resolutions
+        height_thresholds: list of progressively smaller height thresholds
+        ground_quantile: statistical quantile of elevation within bin to use as ground elevation.
+            Set to 0. to use minimum elevation or adjust if ground elevations seem biased.
+    """
 
-    Input treelist must be in FIA format. lma_ref
+    import polars as pl
+    import numpy as np
+    import rasterio
+    import xarray as xr
+    import rioxarray as rxr
 
-    For imperial units:
-        dia_col: in
-        ht_col: ft
-        tpa_col: trees per acre
-        foliage_mass_col: lb
-        leaf_area_col: ft^2
+    def bin2D(points_df, function, cell_size, origin=(0, 0)) -> 'polars.DataFrame':
+        """Aggregate point cloud to a 2D grid and apply a polars function
 
-    For metric units:
-        dia_col: cm
-        ht_col: m
-        tpa_col: trees per hectare
-        foliage_mass_col: kg
-        leaf_area_col: m^2
+        points_df: a polars dataframe with columns 'X', 'Y', 'Z'
+        function: a function compatible with polars.DataFrame.aggregate(); may need to specify col name e.g. pl.min('z')
+        cell_size: float value for output raster resolution
+        origin: origin of grid relative to coordinates
+        """
+        # Function should be from polars and
 
-    Units in other columns are not considered"""
+        import polars as pl
+        import numpy as np
 
-    from nsvb import estimators
+        # Get function value for each bin
+        points_df = points_df.with_columns(pl.col('X').sub(origin[0]).floordiv(cell_size).cast(pl.Int32).alias('XBin'),
+                                           pl.col('Y').sub(origin[1]).floordiv(cell_size).cast(pl.Int32).alias('YBin'))
 
-    if input_metric:
-        treelist[dia_col] /= 2.54
-        treelist[ht_col] *= 3.2808
-        treelist[tpa_col] *= 2.471
+        bin_vals = points_df.group_by(['XBin', 'YBin']).agg(function)
 
-    treelist[foliage_mass_col] = 0.
-    for i in treelist.index:
-        treelist.loc[i,foliage_mass_col] = estimators.total_foliage_dry_weight(treelist.loc[i,species_col],
-                                                                               treelist.loc[i,dia_col],
-                                                                               treelist.loc[i,ht_col],
-                                                                               division)
-    if lma_ref_spcd is not None:
-        if 'SPCD_OG' in treelist.columns:
-            treelist = treelist.merge(lma_ref_spcd[[species_col, 'LMA']], left_on='SPCD_OG',right_on=species_col,suffixes=['','_y'], how='left')
-        else:
-            treelist = treelist.merge(lma_ref_spcd[[species_col, 'LMA']], on=species_col, how='left')
-        treelist['LMA_SPCD'] = treelist['LMA']
-        if lma_ref_spgrpcd is not None:
-            treelist = treelist.drop(columns='LMA')
+        # Get df containing all possible bins
+        binminx = points_df['XBin'].min()
+        binminy = points_df['YBin'].min()
+        binmaxx = points_df['XBin'].max()
+        binmaxy = points_df['YBin'].max()
 
-    if lma_ref_spgrpcd is not None:
-        treelist = treelist.merge(lma_ref_spgrpcd[[species_group_col,'LMA']], on=species_group_col, how='left')
-        treelist['LMA_SPGRPCD'] = treelist['LMA']
-        if lma_ref_spcd is not None:
-            treelist['LMA'] = treelist['LMA_SPCD']
-            treelist.loc[treelist['LMA'].isna(),'LMA'] = treelist.loc[treelist['LMA'].isna(),'LMA_SPGRPCD']
+        ybins, xbins = np.meshgrid(np.arange(binminy, binmaxy + 1),
+                                   np.arange(binminx, binmaxx + 1),
+                                   indexing='ij')
 
-    # Convert lb to kg for leaf area calculation
-    treelist[foliage_mass_col] /= 2.2046
+        bins_df = pl.DataFrame({'YBin': ybins.flatten().astype(np.int32),
+                                'XBin': xbins.flatten().astype(np.int32)})
 
-    # Calculate leaf area
-    if 'LMA' in treelist.columns:
-        treelist['LEAF_AREA'] = treelist[foliage_mass_col] / treelist['LMA']
-        # Convert metric to sq feet
-        if not output_metric:
-            treelist['LEAF_AREA'] *= 10.7639
+        return bins_df.join(bin_vals, ['YBin', 'XBin'], 'left')
 
-    # Convert in,ft,tpa to cm,m,tpha
-    if output_metric:
-        treelist[dia_col] *= 2.54
-        treelist[ht_col] /= 3.2808
-        treelist[tpa_col] /= 2.471
+    # Format point cloud as polars dataframe
+    try:
+        points = points.xyz
+    except:
+        points = points[:, 0:3]
 
-    # Convert kg to lb
-    if not output_metric:
-        treelist[foliage_mass_col] *= 2.2046
+    points_df = pl.DataFrame({'X': points[:, 0], 'Y': points[:, 1], 'Z': points[:, 2]})
 
-    return treelist
+    # Iterative height filtering
+    for window_size, height_thresh in zip(window_sizes, height_thresholds):
+        # Get ground surface based on low point in window
+        bin_df = bin2D(points_df, pl.quantile('Z',ground_quantile), window_size, origin)
+        bin_df = bin_df.rename({'Z':'Ground'})
 
+        # Interpolate missing values
+        mask_valid = bin_df['Ground'].is_finite().is_not_null()
+        if mask_valid.sum() != len(bin_df):
+            points_valid = bin_df.filter(mask_valid).select(['YBin','XBin'])
+            values_valid = bin_df.filter(mask_valid)['Ground']
+            points_missing = bin_df.filter(~mask_valid).select(['YBin','XBin'])
+            values_missing = interp2D_w_nearest_neighbor_extrapolation(points_valid.to_numpy(), values_valid.to_numpy(), points_missing.to_numpy())
+            new_vals = bin_df['Ground'].to_numpy().copy()
+            new_vals[~mask_valid] = values_missing
+            bin_df = bin_df.with_columns(pl.lit(new_vals).alias('Ground'))
 
-def profiles_from_treelist(treelist:pd.DataFrame,
-                           plot_name_col = "PLT_CN",
-                           dia_col = "DIA",
-                           ht_col = "HT",
-                           crown_ratio_col = "CR",
-                           tpa_col = "TPA_UNADJ",
-                           species_col = "SPCD",
-                           species_group_col = "SPGRPCD",
-                           foliage_mass_col = "DRYBIO_FOLIAGE",
-                           ht_interval:float=0.2,
-                           area_factor:float=10000,
-                           by_species:bool=True):
-    """Make canopy bulk density and/or leaf area density profiles from treelist.
+        # Get height-above-ground
+        points_df = points_df.with_columns(pl.col('Y').sub(origin[1]).floordiv(window_size).cast(pl.Int32).alias('YBin'),
+                                            pl.col('X').sub(origin[0]).floordiv(window_size).cast(pl.Int32).alias('XBin'))
 
-    Treelist must be in FIA format. This process is units-agnostic except for area factor, which represents area2/area1
-    where input units are trees/area1 and output units are kg/(ht_unit*area2). For input trees/ha and output kg/m^3, area
-    factor is 10000 m^2/ha. CR must be percent format (1-100). For leaf area profile, df must have column LEAF_AREA with units in m^2."""
+        points_df = points_df.drop('Ground',strict=False).join(bin_df, ['YBin', 'XBin'], 'left')
 
-    tree_bins = []
-    for i in treelist.index:
-        ht = treelist.loc[i,ht_col]
-        cr = treelist.loc[i,crown_ratio_col]
-        if np.isnan(ht) or np.isnan(cr):
-            raise ValueError('HT and CR must not be nan')
+        # Remove points above the height threshold
+        points_df = points_df.filter(pl.col('Z') <= pl.col('Ground').add(height_thresh))
 
-        max_ht_bin = int(round(ht / ht_interval))
-        min_ht_bin = int(round((ht * (1 - cr / 100)) / ht_interval))
-        bins = np.arange(min_ht_bin,max_ht_bin+1)
-        df = pd.DataFrame({plot_name_col:treelist.loc[i,plot_name_col],'HT_BIN':bins, ht_col: bins*ht_interval,
-                           species_col:treelist.loc[i,species_col]})
-        if foliage_mass_col in treelist.columns:
-            df['CBD']=treelist.loc[i,foliage_mass_col] * treelist.loc[i,tpa_col] / area_factor / len(bins)
-        if 'LEAF_AREA' in treelist.columns:
-            df['LAD']=treelist.loc[i,'LEAF_AREA'] * treelist.loc[i,tpa_col] / area_factor / len(bins)
-        if 'LMA' in treelist.columns:
-            df['LMA']=treelist.loc[i,'LMA']
-        tree_bins.append(df)
-    tree_bins = pd.concat(tree_bins)
+    # Convert to raster
+    nx = bin_df['XBin'].n_unique()
+    ny = bin_df['YBin'].n_unique()
+    grid = bin_df.sort(['YBin','XBin'],descending=[True,False])['Ground'].to_numpy().reshape([ny,nx])
 
-    if by_species:
-        profiles = tree_bins.pivot_table(index=[plot_name_col, 'HT_BIN', species_col],
-                                         aggfunc={'CBD':'sum', 'LAD':'sum', 'LMA':'mean'}).reset_index()
-    else:
-        tree_bins = tree_bins.drop(columns=species_col)
-        tree_bins['LMAxCBD'] = tree_bins['LMA'] * tree_bins['CBD']
-        profiles = tree_bins.pivot_table(index=[plot_name_col, 'HT_BIN'],
-                                         aggfunc={'CBD': 'sum', 'LAD': 'sum', 'LMAxCBD': 'sum'}).reset_index()
-        profiles['LMA'] = profiles['LMAxCBD'] / profiles['CBD']
-        profiles = profiles.drop(columns='LMAxCBD')
+    # Get coordinates of upper left corner
+    ul_x = bin_df['XBin'].min() * window_size + origin[0]
+    ul_y = bin_df['YBin'].max() * window_size + window_size + origin[1]
 
-    profiles.insert(2, ht_col, profiles['HT_BIN'] * ht_interval)
-    return profiles
+    transform = rasterio.transform.from_origin(ul_x, ul_y, window_size, window_size)
+
+    metadata = {
+        'driver': 'GTiff',
+        'dtype': rasterio.float32,
+        'nodata': None,
+        'width': nx,
+        'height': ny,
+        'count': 1,  # Number of bands
+        'crs': crs,  # Coordinate reference system
+        'transform': transform,
+    }
+
+    x_coords = ul_x + (np.arange(nx) + 0.5)*window_size
+    y_coords = ul_y - (np.arange(ny) + 0.5)*window_size
+
+    da = xr.DataArray(
+        grid,
+        dims=("Y", "X"),
+        coords={"X": x_coords, "Y": y_coords},  # optional
+        name="Z"
+    )
+
+    da.rio.set_spatial_dims('X','Y')
+    da.rio.write_transform(transform, inplace=True)
+    da.rio.write_crs(crs, inplace=True)
+    da.rio.write_nodata(metadata["nodata"], inplace=True)
+
+    if output_path is not None:
+        da.rio.to_raster(output_path)
+
+    # if output_path is not None:
+    #     with rasterio.open(output_path, 'w', **metadata) as dst:
+    #         dst.write(grid.astype(rasterio.float32), 1)  # Write to band 1
+
+    return da
+
+def calculate_dem_metrics(dem_df, clip_radius=None) -> dict:
+    """Summarize overall terrain slope, aspect, roughness, and concavity"""
+    import statsmodels.api as sm
+    import pandas as pd
+    results = {}
+
+    if clip_radius is not None:
+        # Calculate horizontal distance from center
+        dem_df['HD'] = np.sqrt(dem_df['X'] ** 2 + dem_df['Y'] ** 2)
+        # Filter outside of plot radius
+        dem_df = dem_df[dem_df['HD'] < clip_radius]
+    dem_df = dem_df[~np.isnan(dem_df['Z'])]
+    dem_df['intercept'] = 1
+
+    # Fit a plane using linear regression
+    model = sm.OLS(dem_df['Z'],dem_df[['intercept','X', 'Y']]).fit()
+
+    # Extract coefficients
+    intercept = model.params.iloc[0]
+    coef_x = model.params.iloc[1]
+    coef_y = model.params.iloc[2]
+
+    # Normal vector of the plane
+    normal_vector = np.array([coef_x, coef_y, -1])
+
+    # Normalize the normal vector to get a unit vector
+    normal_unit_vector = normal_vector / np.linalg.norm(normal_vector)
+    if normal_unit_vector[2] < 0:
+        normal_unit_vector *= -1
+
+    # Unit vector along the Z-axis (to get terrain slope relative to up)
+    z_axis_vector = np.array([0, 0, 1])
+
+    # Unit vector along Y-axis (to get terrain aspect relative to north)
+    y_axis_vector = np.array([0, 1, 0])
+
+    # Calculate the dot product between the unit vectors
+    dot_product_z = np.dot(normal_unit_vector, z_axis_vector)
+
+    # Assign angles to data
+    results['TERRAIN_SLOPE'] = np.degrees(np.arccos(dot_product_z))
+    terrain_aspect = np.degrees(np.arctan2(normal_unit_vector[0], normal_unit_vector[1]))
+    if terrain_aspect < 0:
+        terrain_aspect += 360
+    results['TERRAIN_ASPECT'] = terrain_aspect
+
+    # Calculate terrain shape metrics
+    dem_df['resid'] = dem_df['Z'] - model.predict(dem_df[['intercept', 'X', 'Y']])
+    results['TERRAIN_ROUGHNESS'] = np.sqrt(np.mean(dem_df['resid'] ** 2))
+    if clip_radius is not None:
+        hd_half = clip_radius / 2
+        sum_inner = dem_df[dem_df['HD'] < hd_half]['resid'].sum()
+        sum_outer = dem_df[dem_df['HD'] >= hd_half]['resid'].sum()
+        results['TERRAIN_CONCAVITY'] = sum_inner - sum_outer
+
+    return results
 
 def visualize_voxels(grid:'pl.DataFrame',
                      dem:'pl.DataFrame',

@@ -2,6 +2,7 @@ import numpy as np
 import polars as pl
 import pandas as pd
 import pandas as pd
+import seaborn
 from numba import jit,njit,guvectorize,prange,float32,void,uint16,int64,uint32,int32,float64
 from typing import Union, Sequence, Tuple
 
@@ -141,6 +142,7 @@ class Grid:
 
     def calculate_pulse_metrics(self,pulses:'Pulses', G = .5) -> None:
         """Trace lidar pulses through grid to estimate PAD and other metrics"""
+        import warnings
 
         # Define function for voxel traversal algorithm, implemented in parallel with numba just-in-time compiler
         @njit([void(float64[:, :], float64, float64[:], float64[:, :, :], float64[:, :, :], float64[:, :, :])],parallel=True)
@@ -157,12 +159,15 @@ class Grid:
 
             INF = 1000000000000
 
+            # Ensure weights are between 0 and 1
+            pulses[:, 9] = np.clip(pulses[:, 9], 0, 1)
+
             for i in prange(pulses.shape[0]):
 
                 # Find which cell the ray ends in
-                cellXEnd = np.uint32((pulses[i, 3] - gridExtents[0]) // cellSize)
-                cellYEnd = np.uint32((pulses[i, 4] - gridExtents[1]) // cellSize)
-                cellZEnd = np.uint32((pulses[i, 5] - gridExtents[2]) // cellSize)
+                cellXEnd = np.int32((pulses[i, 3] - gridExtents[0]) // cellSize)
+                cellYEnd = np.int32((pulses[i, 4] - gridExtents[1]) // cellSize)
+                cellZEnd = np.int32((pulses[i, 5] - gridExtents[2]) // cellSize)
 
                 # Find which cell the ray starts in
                 xstart = pulses[i, 0]
@@ -173,6 +178,7 @@ class Grid:
                         (xstart <= gridExtents[3]) & (ystart <= gridExtents[4]) & (zstart <= gridExtents[5])):
 
                     # Origin outside bounds. Try to calculate intersection with grid.
+                    # Find t1 and t2 as time (in grid dimensions) where pulse enters and exits grid.
 
                     xdir = pulses[i, 6]
                     ydir = pulses[i, 7]
@@ -217,18 +223,21 @@ class Grid:
                     if t1 > t2:
                         continue  # No intersection
 
-                    # Update starting coordinate such that it is on the edge of the grid
+                    # Update starting coordinate such that it is just inside the edge of the grid
+                    # Add tiny increment to t1 to avoid floating point errors that can occur if point is on edge of grid
+                    t1 += 1e-10
                     xstart = np.float64(xstart + t1 * xdir)
                     ystart = np.float64(ystart + t1 * ydir)
                     zstart = np.float64(zstart + t1 * zdir)
 
-                if not ((xstart >= gridExtents[0]) & (ystart >= gridExtents[1]) & (zstart >= gridExtents[2]) &
-                        (xstart <= gridExtents[3]) & (ystart <= gridExtents[4]) & (zstart <= gridExtents[5])):
-                    continue
+                # # Check that pulse is actually in grid to avoid grid index error
+                # if not ((xstart >= gridExtents[0]) & (ystart >= gridExtents[1]) & (zstart >= gridExtents[2]) &
+                #         (xstart <= gridExtents[3]) & (ystart <= gridExtents[4]) & (zstart <= gridExtents[5])):
+                #     continue
 
-                cellX = np.uint32((xstart - gridExtents[0]) // cellSize)
-                cellY = np.uint32((ystart - gridExtents[1]) // cellSize)
-                cellZ = np.uint32((zstart - gridExtents[2]) // cellSize)
+                cellX = np.int32((xstart - gridExtents[0]) // cellSize)
+                cellY = np.int32((ystart - gridExtents[1]) // cellSize)
+                cellZ = np.int32((zstart - gridExtents[2]) // cellSize)
 
                 # Calculate tmax as the number of timesteps to reach edge of next voxel.
                 # Account for travelling towards upper bounds of voxels or lower bounds of voxels
@@ -303,12 +312,18 @@ class Grid:
         voxel_traversal(pulses.array, self.cell_size, self.extents, self.p_directed, self.p_transmitted,
                         self.p_intercepted)
 
+        warnings.filterwarnings("ignore")
         meanPathLength = .843 * self.cell_size  # Correction for unequal path lengths from Grau et al 2017
         self.occlusion = 1 - (self.p_intercepted + self.p_transmitted) / self.p_directed
         self.occlusion[~np.isfinite(self.occlusion)] = 1
         self.pad = -np.log(1 - (self.p_intercepted / (self.p_intercepted + self.p_transmitted))) / (G * meanPathLength)
         self.occlusion[~np.isfinite(self.pad)] = 1
         self.pad[~np.isfinite(self.pad)] = 0
+
+        # Validate result
+        if (np.sum(self.p_directed > 0) / len(pulses.df)) < .9:
+            raise ValueError("More than 10% of pulses not found in grid. This likely represents a processing error.")
+
 
     def add_pulse_metrics(self,grid, G = .5) -> None:
         """Combine pulse metrics from two Grid objects. Grids must overlap exactly (same extents, same cell size)."""
@@ -331,6 +346,27 @@ class Grid:
         presence = (self.pad>0).astype(np.float32)
         count = ndimage.uniform_filter(presence, window_radius) * window_radius ** 2
         self.pad[count < min_count_present] = 0
+
+    def create_dem_preclassified(self, pulses):
+        import polars as pl
+        from voxelmon.utils import interp2D_w_cubic_extrapolation
+
+        points = pulses.df.filter(pl.col('Classification') == 2).select(['X','Y','Z'])
+        # Get lowest point in base grid
+        grid = self.bin2D(points,pl.min('Z'))
+
+        # Create a grid of coordinates corresponding to the array indices
+        x, y = np.indices(grid.shape)
+
+        # Interpolate remaining missing values
+        maskMissing = np.isnan(grid)
+        pointsValid = np.array((x[~maskMissing], y[~maskMissing])).T
+        valuesValid = grid[~maskMissing]
+        pointsMissing = np.array((x[maskMissing], y[maskMissing])).T
+        grid[maskMissing] = interp2D_w_cubic_extrapolation(pointsValid, valuesValid, pointsMissing)
+
+        self.dem = grid
+        self.hag = (self.centers[:,2] - np.tile(grid.flatten(),self.shape[2])).reshape(self.shape,order='F')
 
 
     def create_dem_decreasing_window(self, pulses:'Pulses', window_sizes:Sequence[float] = [5, 2.5, 1, .5],
@@ -359,7 +395,7 @@ class Grid:
 
         # Get lowest point in base grid
         grid = self.bin2D(points,pl.min('Z'))
-        grid[np.isnan(grid)]=99
+        grid[np.isnan(grid)]=9999
         centers = self.centers_xy
         # Create a grid of coordinates corresponding to the array indices
         x, y = np.indices(grid.shape)
@@ -376,7 +412,7 @@ class Grid:
             grid = scipy.ndimage.percentile_filter(grid,.25,windowShape,mode='nearest')
 
             # Interpolate remaining missing values
-            maskMissing = grid == 99
+            maskMissing = grid == 9999
             pointsValid = np.array((x[~maskMissing], y[~maskMissing])).T
             valuesValid = grid[~maskMissing]
             pointsMissing = np.array((x[maskMissing], y[maskMissing])).T
@@ -392,10 +428,10 @@ class Grid:
             # Remove points that are not near the ground and recalculate lowest points
             points = points.filter(pl.col('Z') <= pl.col('ground').add(heightThresh))
             grid = self.bin2D(points, pl.min('Z'))
-            grid[np.isnan(grid)] = 99
+            grid[np.isnan(grid)] = 9999
 
         # Interpolate remaining missing values
-        maskMissing = grid == 99
+        maskMissing = grid == 9999
         pointsValid = np.array((x[~maskMissing], y[~maskMissing])).T
         valuesValid = grid[~maskMissing]
         pointsMissing = np.array((x[maskMissing], y[maskMissing])).T
@@ -407,62 +443,10 @@ class Grid:
 
     def calculate_dem_metrics(self, clip_radius=None) -> dict:
         """Summarize overall terrain slope, aspect, roughness, and concavity"""
-        import statsmodels.api as sm
-        import pandas as pd
-        results = {}
-
+        from voxelmon.utils import calculate_dem_metrics
         dem_df = pd.DataFrame({'X': self.centers_xy[:, 0], 'Y': self.centers_xy[:, 1], 'Z':self.dem.flatten()})
+        return calculate_dem_metrics(dem_df,clip_radius=clip_radius)
 
-        if clip_radius is not None:
-            # Calculate horizontal distance from center
-            dem_df['HD'] = np.sqrt(dem_df['X'] ** 2 + dem_df['Y'] ** 2)
-            # Filter outside of plot radius
-            dem_df = dem_df[dem_df['HD'] < clip_radius]
-        dem_df = dem_df[~np.isnan(dem_df['Z'])]
-        dem_df['intercept'] = 1
-
-        # Fit a plane using linear regression
-        model = sm.OLS(dem_df['Z'],dem_df[['intercept','X', 'Y']]).fit()
-
-        # Extract coefficients
-        intercept = model.params.iloc[0]
-        coef_x = model.params.iloc[1]
-        coef_y = model.params.iloc[2]
-
-        # Normal vector of the plane
-        normal_vector = np.array([coef_x, coef_y, -1])
-
-        # Normalize the normal vector to get a unit vector
-        normal_unit_vector = normal_vector / np.linalg.norm(normal_vector)
-        if normal_unit_vector[2] < 0:
-            normal_unit_vector *= -1
-
-        # Unit vector along the Z-axis (to get terrain slope relative to up)
-        z_axis_vector = np.array([0, 0, 1])
-
-        # Unit vector along Y-axis (to get terrain aspect relative to north)
-        y_axis_vector = np.array([0, 1, 0])
-
-        # Calculate the dot product between the unit vectors
-        dot_product_z = np.dot(normal_unit_vector, z_axis_vector)
-
-        # Assign angles to data
-        results['TERRAIN_SLOPE'] = np.degrees(np.arccos(dot_product_z))
-        terrain_aspect = np.degrees(np.arctan2(normal_unit_vector[0], normal_unit_vector[1]))
-        if terrain_aspect < 0:
-            terrain_aspect += 360
-        results['TERRAIN_ASPECT'] = terrain_aspect
-
-        # Calculate terrain shape metrics
-        dem_df['resid'] = dem_df['Z'] - model.predict(dem_df[['intercept', 'X', 'Y']])
-        results['TERRAIN_ROUGHNESS'] = np.sqrt(np.mean(dem_df['resid'] ** 2))
-        if clip_radius is not None:
-            hd_half = clip_radius / 2
-            sum_inner = dem_df[dem_df['HD'] < hd_half]['resid'].sum()
-            sum_outer = dem_df[dem_df['HD'] >= hd_half]['resid'].sum()
-            results['TERRAIN_CONCAVITY'] = sum_inner - sum_outer
-
-        return results
 
     def calculate_canopy_cover(self, clip_radius:Union[float,None] = 11.3,
                                cutoff_height:float = 2,
@@ -691,7 +675,7 @@ class Pulses:
 
         if 'Weight' not in pulses_df.columns:
             if 'NumberOfReturns' in self.df.columns:
-                self.df = self.df.with_columns(pl.lit(1).truediv(pl.col('NumberOfReturns')).alias('Weight'))
+                self.df = self.df.with_columns(pl.lit(1).truediv(pl.col('NumberOfReturns')).clip(0,1).alias('Weight'))
             else:
                 self.df = self.df.with_columns(pl.lit(1).alias('Weight'))
 
@@ -774,11 +758,13 @@ class Pulses:
             self.df.write_csv(filepath)
 
 class ALS:
-    def __init__(self,filepath, bounds:str = None, calculate_height:bool=False,reproject_to=None):
+    def __init__(self,filepath=None, reader:'pdal.Reader'=None, bounds:str = None, calculate_height:bool=False,reproject_to=None):
         """Initialize ALS reader
 
         Args:
             filepath (str): Path to ALS file readable by pdal. Type is inferred by extension.
+
+            reader (pdal.Reader): PDAL reader object
 
             bounds (str): Clip extents of the resource in 2 or 3 dimensions, formatted as pdal-compatible string,
                 e.g.: ([xmin, xmax], [ymin, ymax], [zmin, zmax]). If omitted, the entire dataset will be selected.
@@ -790,19 +776,107 @@ class ALS:
 
             """
         from voxelmon.utils import open_file_pdal
+        import os
         self.path = filepath
         self.bounds = bounds
-        self.points, self.crs = open_file_pdal(self.path, self.bounds, calculate_height=calculate_height, reproject_to=reproject_to)
+        self.reader = reader
+        if filepath is not None:
+            ext = os.path.splitext(filepath)[1]
+            if ext == '.csv':
+                self.points = pl.read_csv(filepath)
+                self.crs = None
+            elif ext == '.feather':
+                import geopandas as gpd
+                self.points = gpd.read_feather(filepath)
+                self.points.insert(0,'X',self.points.geometry.x)
+                self.points.insert(1, 'Y', self.points.geometry.y)
+                self.points.insert(2, 'Z', self.points.geometry.z)
+                self.points.drop(columns=['geometry','wkb','xyz'],inplace=True,errors='ignore')
+                self.points = pl.from_pandas(self.points)
+                self.crs = None
+            elif ext == '.parquet':
+                import geopandas as gpd
+                self.points = gpd.read_parquet(filepath)
+                self.points.insert(0,'X',self.points.geometry.x)
+                self.points.insert(1, 'Y', self.points.geometry.y)
+                self.points.insert(2, 'Z', self.points.geometry.z)
+                self.points.drop(columns=['geometry','wkb','xyz'],inplace=True,errors='ignore')
+                self.points = pl.from_pandas(self.points)
+                self.crs = None
+            else:
+                self.points, self.crs = open_file_pdal(self.path, reader=self.reader, bounds=self.bounds, calculate_height=calculate_height, reproject_to=reproject_to)
+        else:
+            self.points = None
+            self.crs = None
 
-    def estimate_flightpath(self, min_separation:float=2,
+    @classmethod
+    def from_table(cls, points, crs=None):
+        als = cls()
+        als.points = points
+        als.crs = crs
+        return als
+
+    def estimate_flightpath(self,
+                            flight_polygons: 'geopandas.GeoDataFrame' = None,
+                            gps_start_col:str = None,
+                            gps_end_col:str = None,
+                            elev_agl:float=None,
+                            unconstrained=False,
+                            min_separation:float=2,
                             time_bin_size:float=.5,
-                            fit_line:bool=True,
                             min_z_q:float = .75,
                             flightline_t_break:float=5)->'pl.DataFrame':
-        """Estimate flightpath by triangulating position from rays drawn between first and last return
+        """Attempt to automagically estimate flightpaths from available information
 
-        This implementation is optimized for tiled data. It assumes that each flight path can be represented by a
-        straight line at a constant altitude above MSL (not ground).
+        Part 1: Get XY coordinates of flightpath:
+
+        Algorithm 1a -- If flight_polygons, gps_start_col, and gps_end_col are provided:
+
+            1a.1. Intersect flight_polygons with ALS points
+            1a.2. Estimate flightpaths from centerline of flight polygons
+            1a.3. Assign returns to flightpaths if GPS time of return is within values provided in gps_start_col and gps_end_col
+
+        Algorithm 1b -- If only flight_polygons are provided:
+
+            1b.1. Intersect flight_polygons with ALS points
+            1b.2. Estimate flightpaths from centerline of flight polygons
+            1b.3. Segment returns by flightline based on gaps in GPS time between returns
+            1b.4. Run convergence algorithm on returns (described below)
+            1b.5. Find flightline from flight_polygons that best fits the convergence points
+
+        Algorithm 1c -- If flight_polygons are not provided:
+
+            1c.1. Segment returns by flightline based on gaps in GPS time between returns
+            1c.2. Run convergence algorithm on returns (described below)
+            1c.3. Filter convergence points to those above the min_z_q quantile of convergence point elevation (helps reduce noise before fitting a line)
+            1c.4. If unconstrained==False, fit a line to the convergence points for each flightline using least squares. Otherwise, return all convergence points.
+
+        Part 2: Get flightpath z position:
+
+        Algorithm 2a -- If elev_agl is provided:
+
+            2a.1. Divide flightpath and associated returns into time bins of time_bin_size
+            2a.2. Estimate ground elevation for returns in each time bin
+            2a.3. Set flightpath elevation to mean of ground elevation + elev_agl
+
+        Algorithm 2b -- If elev_agl is not provided and unconstrained==False:
+
+            2b.1. Elevation is set using mean elevation of convergence points
+
+        Algorithm 2c -- If elev_agl is not provided and unconstrained==True:
+
+            2c.1. Raw elevation of convergence points will be used
+
+        Part 3: Get origin point for each return:
+
+            3.1. Interpolate flight path/convergence point x, y, z by GPS time to get origin point for each return
+
+        Intermediate algorithm -- get convergence points:
+
+            1. Points within the same flightline are segmented by time_bin_size
+            2. Pulses with multiple returns where the first and last return are separated by more than min_separation
+            are identified. A line is traced connecting each first/last pair. For each time bin, a convergence point is
+            identified as the point which minimizes the least squares distance to all lines.
 
         Args:
             min_separation (float): Minimum separation distance between first and last return considered when drawing rays
@@ -817,8 +891,9 @@ class ALS:
         from concurrent.futures import ThreadPoolExecutor
         from sklearn.linear_model import LinearRegression
         from voxelmon.utils import interpolate_flightpath
-
-        self.points = self.points.sort(['GpsTime','ReturnNumber'])
+        from shapely.geometry import LineString, Polygon
+        import geopandas as gpd
+        import matplotlib.pyplot as plt
 
         def split_flightlines(points):
             gps_time_arr = points['GpsTime'].to_numpy()
@@ -831,19 +906,43 @@ class ALS:
             point_views.append(points[prev_i:,:])
             return point_views
 
-        points_views = split_flightlines(self.points)
+        def get_polygon_centerline(poly: 'shapely.geometry.Polygon'):
+            from shapely.geometry import LineString
+            # Get coords of rectangle fit to flightline polygon, find slope of long side
+            coords = poly.minimum_rotated_rectangle.boundary.coords
+            longest = -1
+            for coord, next_coord in zip(coords[:-1], coords[1:]):
+                length = ((next_coord[0] - coord[0]) ** 2 + (next_coord[1] - coord[1]) ** 2) ** .5
+                if length > longest:
+                    longest = length
+                    dxdy = np.array((next_coord[0] - coord[0], next_coord[1] - coord[1])) / length
+
+            # Make line geometry inside polygon
+            centroid = np.array([poly.centroid.coords.xy[0][0], poly.centroid.coords.xy[1][0]])
+            xy0 = centroid + dxdy * poly.boundary.length / 2
+            xy1 = centroid - dxdy * poly.boundary.length / 2
+            line = LineString([xy0, xy1]).intersection(poly)
+            return line
+
+        def get_time_along_line(line_points, returns):
+            from sklearn.neighbors import KNeighborsRegressor
+            model = KNeighborsRegressor(n_neighbors=min(100,len(returns))).fit(returns[['X','Y']].to_numpy(), returns['GpsTime'].to_numpy())
+            flight_gps_time = model.predict(line_points[:,0:2])
+            return flight_gps_time
+
+        def get_elev(line_points,elev_agl,returns):
+            from sklearn.neighbors import KNeighborsRegressor
+            ground = returns.filter(returns['Classification']==2)
+            model = KNeighborsRegressor(n_neighbors=min(100,len(ground))).fit(ground[['X','Y']].to_numpy(), ground['Z'].to_numpy())
+            ground_elev = model.predict(line_points[:,0:2])
+            return ground_elev + elev_agl
 
         def get_convergence_points(points):
-            points_all = points[['X','Y','Z']].to_numpy()
-            return_number_all = points['ReturnNumber'].to_numpy()
-            gps_time = points['GpsTime'].to_numpy()
-            start_time = gps_time.min()
-            end_time = gps_time.max()
             flight_points = []
-            for time in np.arange(start_time,end_time+time_bin_size, time_bin_size):
-                time_mask = (gps_time >= time) & (gps_time < time + time_bin_size)
-                points_arr = points_all[time_mask]
-                return_number = return_number_all[time_mask]
+            for time_bin, points_group in points.group_by('TimeBin'):
+                points_arr = points_group[['X','Y','Z']].to_numpy()
+                return_number = points_group['ReturnNumber'].to_numpy()
+                time = float(time_bin[0] * time_bin_size)
                 first = []
                 last = []
                 count = 0
@@ -887,34 +986,93 @@ class ALS:
                     flight_points.append(p)
             points = np.stack(flight_points)
             points = points[points[:,2]>=np.quantile(points[:,2],min_z_q),:]
-            if fit_line:
-                lmx = LinearRegression().fit(points[:,3].reshape(-1,1),points[:, 0].reshape(-1, 1))
-                lmy = LinearRegression().fit(points[:, 3].reshape(-1, 1), points[:, 1].reshape(-1, 1))
-                #lmz = LinearRegression().fit(points[:, 3].reshape(-1, 1), points[:, 2].reshape(-1, 1))
-                gps_time_out = np.linspace(gps_time.min(),gps_time.max(),100).reshape(-1,1)
-                x = lmx.predict(gps_time_out)
-                y = lmy.predict(gps_time_out)
-                #z = lmz.predict(gps_time_out)
-                z = np.ones_like(x) * points[:, 2].mean()
-                points = np.concatenate([x,y,z,gps_time_out],axis=1)
-
 
             return points
 
-        with ThreadPoolExecutor() as executor:
-            flightlines = list(executor.map(get_convergence_points, points_views))
+        # Preprocess flightline data if available
+        if flight_polygons is not None:
+            # Find flightlines that overlap point cloud
+            flight_polygons = flight_polygons.to_crs(crs=self.crs)
+            ll = self.points[['X', 'Y']].min().to_numpy()[0, :]
+            ur = self.points[['X', 'Y']].max().to_numpy()[0, :]
+            tile_geom = Polygon.from_bounds(ll[0], ll[1], ur[0], ur[1])
+            flights_x = flight_polygons[flight_polygons.intersects(tile_geom)]
+            flights_x = gpd.clip(flights_x, tile_geom.buffer(500))
+            flights = [get_polygon_centerline(poly) for poly in flights_x.geometry]
+            flights = gpd.GeoDataFrame(flights_x.drop(columns='geometry'),geometry=flights,crs=self.crs)
+
+        self.points = self.points.sort(['GpsTime', 'ReturnNumber'])
+        self.points = self.points.with_columns(pl.col('GpsTime').floordiv(time_bin_size).alias('TimeBin'))
+        if gps_start_col is not None and gps_end_col is not None:
+            points_views = []
+            flightlines = []
+            for idx, row in flights.iterrows():
+                # Segment points by GPS time from flight polygons
+                gps_start = row[gps_start_col]
+                gps_end = row[gps_end_col]
+                returns = self.points.filter((self.points['GpsTime'] >= gps_start) & (self.points['GpsTime'] <= gps_end))
+                if len(returns) > 0:
+                    points_views.append(returns)
+                    # Construct flightline points for this flight
+                    line_geom = row['geometry']
+                    flightpoints = line_geom.line_interpolate_point(np.linspace(0,line_geom.length,200,endpoint=True))
+                    flightpoints = np.array([(point.x,point.y) for point in flightpoints])
+                    # Interpolate GPS time along flight path
+                    flight_times = get_time_along_line(flightpoints,returns)
+                    elev = get_elev(flightpoints,elev_agl,returns)
+                    flightline = polars.DataFrame({'X': flightpoints[:, 0], 'Y': flightpoints[:, 1], 'Z': elev,
+                                      'GpsTime': flight_times, 'FlightLine': idx})
+                    flightlines.append(flightline)
+            flightlines = polars.concat(flightlines)
+            self.origin = interpolate_flightpath(self.points, flightlines)
+            return flightlines
+
+        else:
+            # Segment returns by flightline based on gaps in GPS time
+            points_views = split_flightlines(self.points)
+            # Get convergence points
+            with ThreadPoolExecutor() as executor:
+                flightlines = list(executor.map(get_convergence_points, points_views))
 
 
         for i in range(len(flightlines)):
-            flight_points = flightlines[i]
-            flightlines[i] = polars.DataFrame({'X':flight_points[:,0],'Y':flight_points[:,1], 'Z':flight_points[:,2],
-                                              'GpsTime':flight_points[:,3],'FlightLine':i})
+            cpoints = flightlines[i] # Convergence points for this flightline
+            returns = points_views[i] # Lidar returns for this flightline
 
-        flightpath = polars.concat(flightlines)
-        self.origin = interpolate_flightpath(self.points,flightpath)
-        return flightpath
+            if elev_agl is not None:
+                cpoints = get_elev(cpoints, elev_agl, returns)
 
-    def simple_pad(self, bin_size_xy = 10, bin_size_z = 2, min_height = 1, extinction_coefficient=.5, return_type='polars'):
+            if flight_polygons is not None:
+                # Find flightline that is closest to convergence points
+                cpoints_geom = gpd.points_from_xy(cpoints[:, 0], cpoints[:, 1])
+                ls = np.inf
+                matching_flight = None
+                for flight in flights.geometry:
+                    sd = cpoints_geom.distance(flight)**2
+                    if sd < ls:
+                        ls = sd
+                        matching_flight = flight
+                # Interpolate GPS time along flight line
+                matching_flight = get_gps_along_line(matching_flight)
+            elif not unconstrained:
+                lmx = LinearRegression().fit(cpoints[:,3].reshape(-1,1),cpoints[:, 0].reshape(-1, 1))
+                lmy = LinearRegression().fit(cpoints[:, 3].reshape(-1, 1), cpoints[:, 1].reshape(-1, 1))
+                gps_time_out = np.linspace(float(cpoints['GpsTime'].min()),float(cpoints['GpsTime'].max()),100).reshape(-1,1)
+                x = lmx.predict(gps_time_out)
+                y = lmy.predict(gps_time_out)
+                z = np.ones_like(x) * cpoints[:, 2].mean()
+                cpoints = np.concatenate([x,y,z,gps_time_out],axis=1)
+
+            flightlines[i] = polars.DataFrame({'X': cpoints[:, 0], 'Y': cpoints[:, 1], 'Z': cpoints[:, 2],
+                                               'GpsTime': cpoints[:, 3], 'FlightLine': i})
+
+
+
+        flightlines = polars.concat(flightlines)
+        self.origin = interpolate_flightpath(self.points,flightlines)
+        return flightlines
+
+    def simple_pad(self, bin_size_xy = 10, bin_size_z = 2, min_height = 1, extinction_coefficient=.5, return_type='polars', return_counts=False):
         """Estimate plant area density with assumption that pulses were directed straight down.
 
         Requires calculate_height=True when initializing ALS()
@@ -945,21 +1103,24 @@ class ALS:
             pulses_in = counts_cs[:,:,1:]
             pulses_out = counts_cs[:,:,:-1]
             lad = -np.log(pulses_out/pulses_in)/(extinction_coefficient*bin_size_z)
-            lad[pulses_in==0] = np.nan
-            lad[pulses_out==0] = np.nan
+            lad[pulses_in<0] = np.nan
+            lad[pulses_out < 0] = np.nan
 
             x_centers = counts['xBin'].unique() * bin_size_xy + bin_size_xy / 2
             y_centers = counts['yBin'].unique() * bin_size_xy + bin_size_xy / 2
             z_centers = counts['zBin'].unique()[1:] * bin_size_z + bin_size_z / 2 + min_height
 
             if return_type == 'numpy':
-                return lad
+                return_dat =  lad
             elif return_type == 'polars':
                 z, y, x = np.meshgrid(z_centers,y_centers,x_centers, indexing='ij')
-                return pl.DataFrame({'X':x.flatten(),'Y': y.flatten(), 'Z':z.flatten(),'PAD':lad.flatten('F')})
+                return_dat =  pl.DataFrame({'X':x.flatten(),'Y': y.flatten(), 'Z':z.flatten(),'PAD':lad.flatten('F')})
             elif return_type == 'xarray':
                 import xarray as xr
-                return xr.DataArray(lad,coords={'X':x_centers,'Y':y_centers,'Z':z_centers},dims=['X','Y','Z'],name='PAD')
+                da = xr.DataArray(lad,coords={'X':x_centers,'Y':y_centers,'Z':z_centers},dims=['X','Y','Z'],name='PAD')
+                da = da.rio.write_crs(self.crs)
+                da = da.rio.set_spatial_dims('X','Y')
+                return_dat =  da
             elif return_type == 'voxelmon':
                 import xarray as xr
                 if bin_size_xy != bin_size_z:
@@ -983,13 +1144,17 @@ class ALS:
 
                 grid.dem = np.zeros_like(grid.p_intercepted)
 
-                return grid
+                return_dat =  grid
+            if return_counts:
+                return return_dat,counts_grid
+            else:
+                return return_dat
         else:
             # Implement in 1D
             points_df = pl.DataFrame({'Z':arr[:,2]})
             points_df = points_df.with_columns(pl.col('Z').floordiv(bin_size_z).cast(pl.Int32).alias('zBin'))
             counts = points_df.group_by('zBin').agg(pl.count())
-            all_bins = pl.DataFrame({'zBin':np.arange(points_df['zBin'].min(), points_df['zBin'].max())})
+            all_bins = pl.DataFrame({'zBin':np.arange(points_df['zBin'].min(), points_df['zBin'].max())}).cast(pl.Int32)
             counts = all_bins.join(counts, 'zBin', 'left').sort('zBin')
             counts = counts.fill_nan(0).fill_null(0).to_numpy()
 
@@ -1001,9 +1166,9 @@ class ALS:
             lad[pulses_out == 0] = np.nan
 
             if return_type == 'numpy':
-                return lad
+                return_dat =  lad
             elif return_type == 'polars':
-                return pl.DataFrame({'X': self.points['X'].mean(),
+                return_dat =  pl.DataFrame({'X': self.points['X'].mean(),
                                      'Y': self.points['Y'].mean(),
                                      'Z': counts[1:,0] * bin_size_z + bin_size_z / 2 + min_height,
                                      'PAD': lad})
@@ -1011,6 +1176,19 @@ class ALS:
                 raise NotImplementedError('xarray return type not implemented for 1D')
             elif return_type == 'voxelmon':
                 raise ValueError('bin_size_xy must be equal to bin_size_z for voxelmon.Grid')
+            if return_counts:
+                return return_dat,counts
+            else:
+                return return_dat
+
+    def clip_circle(self, x_center, y_center, radius):
+        """Clip points to circle around a point"""
+        horizontal_distance = ((self.points['X'] - x_center) ** 2 + (self.points['Y'] - y_center) ** 2)**.5
+        self.points = self.points.filter(horizontal_distance <= radius)
+
+    def clip_rectangle(self, x_min, y_min, x_max, y_max):
+        """Clip points to a bounding rectangle"""
+        self.points = self.points.filter((pl.col('X') >= x_min) & (pl.col('X') <= x_max) & (pl.col('Y') >= y_min) & (pl.col('Y') <= y_max))
 
     def execute_default_processing(self, export_folder:str,
                                    plot_name:str,
@@ -1018,6 +1196,7 @@ class ALS:
                                    extents:Union[Sequence[float],None] = None,
                                    max_occlusion=.8,
                                    sigma1=0,
+                                   fill_occlusion=False,
                                    min_pad_foliage=.01,
                                    max_pad_foliage=6,
                                    export_dem=True,
@@ -1102,6 +1281,12 @@ class ALS:
         _default_folder_setup(export_folder, pad_grid_dir=export_pad_grid, dem_dir=export_dem, points_dir=False,
                               pad_profile_dir=export_pad_profile, plot_summary_dir=export_plot_summary)
 
+        center_x, center_y, center_z = self.points[['X','Y','Z']].mean().to_numpy()[0]
+        self.points = self.points.with_columns(pl.col('X') - center_x, pl.col('Y') - center_y, pl.col('Z') - center_z)
+        self.origin[:,0] -= center_x
+        self.origin[:,1] -= center_y
+        self.origin[:,2] -= center_z
+
         pulses = Pulses.from_point_cloud_array(self.points, origin=self.origin)
 
         if extents is None:
@@ -1113,12 +1298,28 @@ class ALS:
 
         grid = Grid(extents=extents, cell_size=cell_size)
 
-        grid.create_dem_decreasing_window(pulses_thin,window_sizes=[5,2.5,1],height_thresholds=[2.5,1.25,.5])
+        grid.create_dem_preclassified(pulses_thin)
+
+        # grid.create_dem_decreasing_window(pulses_thin,window_sizes=[5,2.5,1],height_thresholds=[2.5,1.25,.5])
 
         grid.calculate_pulse_metrics(pulses)
 
+        # grid.centers[:,0]+=center_x
+        # grid.centers[:,1]+=center_y
+        # grid.centers[:,2]+=center_z
+        # grid.centers_xy[:,0]+=center_x
+        # grid.centers_xy[:,1]+=center_y
+        #
+        # grid.extents[0]+=center_x
+        # grid.extents[1]+=center_y
+        # grid.extents[2]+=center_z
+        # grid.extents[3]+=center_x
+        # grid.extents[4]+=center_y
+        # grid.extents[5]+=center_z
+        # grid.dem+=center_z
+
         profile, summary = _default_postprocessing(grid=grid, plot_name=plot_name, export_folder=export_folder,
-                                                   plot_radius=None, max_occlusion=max_occlusion, fill_occlusion=True,
+                                                   plot_radius=None, max_occlusion=max_occlusion, fill_occlusion=fill_occlusion,
                                                    sigma1=sigma1, min_pad_foliage=min_pad_foliage, max_pad_foliage=max_pad_foliage,
                                                    export_pad_grid=export_pad_grid, export_dem=export_dem,
                                                    export_pad_profile=export_pad_profile, export_plot_summary=export_plot_summary)
@@ -1146,11 +1347,12 @@ class TLS_PTX:
         self.path = filepath
         self._load_points(drop_null=drop_null)
         self._get_transform()
-        self.apply_transform(self.transform, apply_translation=apply_translation, apply_rotation=apply_rotation)
-        self.apply_offset(offset)
-        self._get_polar_coordinates()
-        if drop_null==False:
-            self._create_pseudo_returns()
+        if self.npoints > 0:
+            self.apply_transform(self.transform, apply_translation=apply_translation, apply_rotation=apply_rotation)
+            self.apply_offset(offset)
+            self._get_polar_coordinates()
+            if drop_null==False:
+                self._create_pseudo_returns()
 
     def _load_points(self, drop_null=False):
         import polars
@@ -1160,6 +1362,16 @@ class TLS_PTX:
             schema = [polars.Float64] * 4
         elif firstRow.size==7:
             schema = [polars.Float64] * 4 + [polars.Int32]*3
+        elif firstRow.size==0:
+            self.ncols = 0
+            self.nrows = 0
+            self.rowsCols = np.array([])
+            self.nullMask = np.array([])
+            self.npoints = 0
+            self.xyz = np.array([])
+            self.intensity = np.array([])
+            self.rgb = np.array([])
+            return None
         else:
             raise('Unexpected number of columns in PTX file')
 
@@ -1205,8 +1417,13 @@ class TLS_PTX:
             self.transform = np.loadtxt(aux_transform)
         else:
             self.transform = np.loadtxt(self.path,np.float64,skiprows=6,max_rows=4).T
-        self.originOriginal = self.transform[:3,3]
-        self.origin = np.array([0.,0.,0.])
+        if self.transform.size==16:
+            self.originOriginal = self.transform[:3,3]
+            self.origin = np.array([0., 0., 0.])
+        else:
+            self.originOriginal = None
+            self.transform = None
+            self.origin = None
 
     def apply_transform(self, transform, apply_translation=True, apply_rotation=True):
         toApply = np.eye(4,4)
@@ -1874,6 +2091,7 @@ class BulkDensityProfileModelFitter:
         return obj
 
     def fit_mass_ratio_bayesian(self,
+                                leaf_mass:np.ndarray,
                                  prior_mean: np.ndarray,
                                  prior_std: np.ndarray,
                                  sigma_residuals:float = .02,
@@ -1884,7 +2102,8 @@ class BulkDensityProfileModelFitter:
         Fit self with Bayesian linear regression using prior coefficients and new observations
 
         Args:
-            prior_mean: Prior estimates of the mass:lidar value coefficients (e.g. LMA estimates from previous studies).
+            leaf_mass: Estimates of the mass:lidar value coefficients by species (e.g. LMA estimates from previous studies).
+            prior_mean: Prior estimates of the feature coefficient by species
             prior_std: Estimated standard deviation for prior coefficients. If uncertain, use large value
                 representing weakly informative prior.
             fit_intercept: Use intercept in CBD prediction equation.
@@ -1895,33 +2114,63 @@ class BulkDensityProfileModelFitter:
         import pymc as pm
         import arviz as az
 
-        # Get species proportions
+        # Get foliage proportion by species
         X = self.profile_data[self.species_cols].to_numpy()
 
-        # Scale lidar value by species proportions
+        # Get PAD by species by scaling lidar value by species proportions
         pad = self.profile_data[self.lidar_value_col].to_numpy().reshape(-1, 1)
         X *= pad
 
+        # Get "uncalibrated" lidar estimate of CBD by multiplying PAD by LMA for each species
+        leaf_mass = np.array(leaf_mass)
+        X *= leaf_mass
+
+        # Get observed CBD as array
         y = self.profile_data[self.cbd_col].to_numpy()
 
-        #if fit_intercept:
-        #    raise NotImplementedError('Fit with intercept is not fully implemented')
+        # Get plot ID as integer array
+        group_idx, str_vals =pd.factorize(self.profile_data[self.plot_id_col])
+        group_idx = np.array(group_idx, int)
+
+        if fit_intercept:
+           raise NotImplementedError('Fit with intercept is not currently implemented')
 
         with pm.Model() as model:
-            # Priors for coefficients
-            betas = pm.Normal('betas', mu=prior_mean, sigma=prior_std, shape=(X.shape[1],))
 
-            # Assume normal distribution of residuals
+            # Global slopes
+            betas = pm.Normal(
+                'betas',
+                mu=prior_mean,
+                sigma=prior_std,
+                shape=X.shape[1]
+            )
+
+            # Group structure
+            n_groups = len(np.unique(group_idx))
+
+            # Between-group slope variance (hyperprior)
+            group_beta_sigma = pm.HalfNormal('group_beta_sigma', sigma=0.05)
+
+            # Group-specific slopes (hierarchical pooling)
+            group_betas = pm.Normal(
+                'group_betas',
+                mu=betas,  # centered on global slopes
+                sigma=group_beta_sigma,  # pooled deviation
+                shape=(n_groups, X.shape[1])
+            )
+
+            # Observation noise (separate from group structure)
             sigma = pm.HalfNormal('sigma', sigma=sigma_residuals)
 
-            if fit_intercept:
-                # Prior for the intercept
-                intercept = pm.Normal('intercept', mu=0, sigma=sigma_intercept)
-                Y_obs = pm.Normal('Y_obs', mu=intercept + pm.math.dot(X, betas), sigma=sigma, observed=y)
-            else:
-                Y_obs = pm.Normal('Y_obs', mu=pm.math.dot(X, betas), sigma=sigma, observed=y)
+            # Linear predictor (no intercept terms)
+            mu = (
+                pm.math.sum(X * group_betas[group_idx], axis=1)
+            )
 
-            # Inference (sampling from the posterior)
+            # Likelihood
+            Y_obs = pm.Normal('Y_obs', mu=mu, sigma=sigma, observed=y)
+
+            # Inference
             idata = pm.sample()
 
         # After sampling, you can inspect the posterior samples
@@ -1930,15 +2179,14 @@ class BulkDensityProfileModelFitter:
         import matplotlib.pyplot as plt
         plt.show()
         self.fit_summary = az.summary(idata, round_to=2)
-        if fit_intercept:
-            self.fit_summary.index = ['intercept'] + self.species_cols + ['sigma']
-            self.intercept = self.fit_summary['mean'].iloc[0]
-            self.mass_ratio_dict = dict(zip(self.species_cols, self.fit_summary['mean'].iloc[1:len(self.species_cols) + 1]))
-        else:
-            self.fit_summary.index = self.species_cols + ['sigma']
-            self.intercept = 0
-            self.mass_ratio_dict = dict(zip(self.species_cols, self.fit_summary['mean'].iloc[:len(self.species_cols)]))
+        self.fit_summary.index = self.species_cols + ['sigma']
+        self.intercept = 0
+        coef = self.fit_summary['mean'].iloc[:len(self.species_cols)]
+        self.lidar_coef_dict = dict(zip(self.species_cols, coef))
         #print(self.fit_summary)
+
+        self.mass_ratio_unadj_dict = dict(zip(self.species_cols, leaf_mass))
+        self.mass_ratio_dict = dict(zip(self.species_cols, coef * leaf_mass))
 
         if two_stage_fit:
             import statsmodels.api as sm
@@ -1958,6 +2206,73 @@ class BulkDensityProfileModelFitter:
             lm = sm.OLS(obs_plot_sum,pred_plot_sum).fit()
             self.adj_factor = lm.params[0]
             for species in self.mass_ratio_dict:
+                self.lidar_coef_dict[species] *= self.adj_factor
+                self.mass_ratio_dict[species] *= self.adj_factor
+
+        #TODO: Fix fit with intercept
+
+        #TODO: Standardize outputs
+
+        #TODO: Reimplement two-stage fit
+
+    def fit_mass_ratio_ols(self,
+                        leaf_mass:np.ndarray,
+                         fit_intercept: bool = False,
+                         two_stage_fit: bool = False):
+        """
+        Fit self with ordinary least squares linear regression
+
+        Args:
+            leaf_mass: Estimates of the mass:lidar value coefficients by species (e.g. LMA estimates from previous studies).
+            fit_intercept: Use intercept in CBD prediction equation.
+            two_stage_fit: Adjust mass ratio values to reduce bias in total canopy fuel load predictions
+
+        Returns: None
+        """
+        from sklearn.linear_model import LinearRegression
+
+        # Get foliage proportion by species
+        X = self.profile_data[self.species_cols].to_numpy()
+
+        # Get PAD by species by scaling lidar value by species proportions
+        pad = self.profile_data[self.lidar_value_col].to_numpy().reshape(-1, 1)
+        X *= pad
+
+        # Get "uncalibrated" lidar estimate of CBD by multiplying PAD by LMA for each species
+        leaf_mass = np.array(leaf_mass)
+        X *= leaf_mass
+
+        y = self.profile_data[self.cbd_col].to_numpy()
+
+        lm = LinearRegression(fit_intercept=fit_intercept, positive=True).fit(X, y)
+
+        self.intercept = lm.intercept_
+        coef = lm.coef_
+        self.lidar_coef_dict = dict(zip(self.species_cols, coef))
+        #print(self.fit_summary)
+
+        self.mass_ratio_unadj_dict = dict(zip(self.species_cols, leaf_mass))
+        self.mass_ratio_dict = dict(zip(self.species_cols, coef * leaf_mass))
+
+        if two_stage_fit:
+            import statsmodels.api as sm
+            # Convert plot_id strings to vector of integers
+            _, plot_id_arr = np.unique(self.profile_data[self.plot_id_col], return_inverse=True)
+            # Get predicted cbd of each bin
+            models = self.to_models()
+            y_pred = np.zeros(y.shape, dtype=float)
+            for veg_type in self.profile_data[self.class_id_col].unique():
+                model = models[veg_type]
+                class_mask = self.profile_data[self.class_id_col] == veg_type
+                y_pred[class_mask] = model.predict(self.profile_data[class_mask],
+                                                     self.height_col, self.lidar_value_col, self.plot_id_col)
+            # Get sum of bins in each plot (pred and obs)
+            pred_plot_sum = np.bincount(plot_id_arr, weights=y_pred)
+            obs_plot_sum = np.bincount(plot_id_arr, weights=y)
+            lm = sm.OLS(obs_plot_sum,pred_plot_sum).fit()
+            self.adj_factor = lm.params[0]
+            for species in self.mass_ratio_dict:
+                self.lidar_coef_dict[species] *= self.adj_factor
                 self.mass_ratio_dict[species] *= self.adj_factor
 
         #TODO: Fix fit with intercept

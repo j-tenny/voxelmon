@@ -158,14 +158,22 @@ def process(input_folder, export_folder, field_summary_path, canopy_model_path,
         profile = pd.read_csv(profile_path)
         profiles.append(profile)
     profiles = pd.concat(profiles)
+
+    # Summarize height bins
+    profiles['HEIGHT_BIN'] = pd.cut(profiles['HT'], bins=[.2,1,2,5,999], labels=['LOAD_02T1','LOAD_1T2','LOAD_2T5','LOAD_5T999'], include_lowest=True, right=False)
+    bin_summary = profiles.pivot_table(index='PLT_CN',columns='HEIGHT_BIN',values='CBD',aggfunc='sum',observed=False) * cell_size
+    bin_summary.columns = bin_summary.columns.values.astype(str)
     profiles = profiles[profiles['HT'] >= min_height]
 
     # Get fuel strata gap, effective CBD, and other summary values
     summary = voxelmon.utils.summarize_profiles(profiles, min_height=min_height)
     summary = summary.set_index('PLT_CN')
 
+    # Add profile data
+    summary = summary.join(bin_summary, how='left')
+
     # Add field data
-    summary = summary.join(field_summary, how='inner')
+    summary = summary.join(field_summary, how='left')
 
     # Add other lidar data
     summary_paths = get_files_list(export_folder / 'Plot_Summary', '.csv', recursive=False)
@@ -248,7 +256,7 @@ def process(input_folder, export_folder, field_summary_path, canopy_model_path,
             ax2.axvline(summary.loc[plotname, 'CBD'], linestyle='--', color='black',
                         label='Effective Canopy Bulk Density')
             ax2.axvline(.011, linestyle='--', color='yellow', label='FSG Cutoff')
-            ymax = max(ax1.get_ylim()[1], ax2.get_ylim()[1], 14)
+            ymax = min(max(ax1.get_ylim()[1], ax2.get_ylim()[1], 14),max_grid_height)
             ax1.set_ylim([0, ymax])
             ax2.set_ylim([0, ymax])
             if cbd_axis_limit is not None:
@@ -259,20 +267,20 @@ def process(input_folder, export_folder, field_summary_path, canopy_model_path,
             ax1.set_xlabel('Easting (m)')
             ax2.set_xlabel('Canopy Bulk Density (kg/m^3)')
             ax2.legend(loc="upper right", prop={'size': 'small'})
-            table_data = [['Effective CBD', 'Fuel Strata Gap', 'Effective Surface Load', 'Spread Rate', 'Intensity',
-                           'Flame Length', 'Torching Index', 'Crowning Index'],
-                          [summary.loc[plotname, 'CBD'].round(4), summary.loc[plotname, 'FSG'].round(1),
-                           summary.loc[plotname, 'CHAR_LOAD_TOTAL'].round(2),
-                           summary.loc[plotname, 'SPREAD_RATE'].round(3),
-                           summary.loc[plotname, 'FIRELINE_INTENSITY'].round(1),
-                           summary.loc[plotname, 'FLAME_LENGTH'].round(1), summary.loc[plotname, 'TORCHING_INDEX'],
-                           summary.loc[plotname, 'CROWNING_INDEX']],
-                          ['kg/m^3', 'm', 'kg/m^2', 'km/hr', 'kW/m', 'm', 'km/hr', 'km/hr']]
+            table_data = [['Effective CBD', 'Fuel Strata Gap', 'Fuel 0.2m-1m',
+                           'Fuel 1m-2m', 'Fuel 2m-5m', 'Fuel >5m'],
+                          [summary.loc[plotname, 'CBD'].round(4),
+                           summary.loc[plotname, 'FSG'].round(1),
+                           summary.loc[plotname, 'LOAD_02T1'].round(4),
+                           summary.loc[plotname, 'LOAD_1T2'].round(4),
+                           summary.loc[plotname, 'LOAD_2T5'].round(4),
+                           summary.loc[plotname, 'LOAD_5T999'].round(4)],
+                          ['kg/m^3', 'm', 'kg/m^2', 'kg/m^2', 'kg/m^2', 'kg/m^2']]
             table_data = np.array(table_data).T
             ax2.table(cellText=table_data, colLabels=['Name', 'Value', 'Units'], cellLoc='center',
                       bbox=[1.1, 0, .75, 1], colWidths=[.5, .25, .25])
-            ax2.text(1.1, -.1, f"Potential fire behavior based on \n{wind_speed}km/hr wind; 'very low' moisture",
-                     transform=ax2.transAxes, fontsize=8, ha='left')
+            # ax2.text(1.1, -.1, f"Potential fire behavior based on \n{wind_speed}km/hr wind; 'very low' moisture",
+            #          transform=ax2.transAxes, fontsize=8, ha='left')
             f.tight_layout(pad=2)
             plt.savefig(export_folder.joinpath(plotname + '.png'), dpi=300)
             plt.show()

@@ -1,4 +1,8 @@
-# Process plant area density for all ptx files in a directory. It assumed each file is an independent plot location.
+# Process plant area density for all ptx files in a directory. It is assumed that there are multiple plots which each
+# have multiple scans that are already aligned. To set up, ensure that the center scan can be identified by a consistent
+# suffix in the file name. Then ensure that all scans within the same plot contain the same plot_id in the file name, as
+# defined by get_plot_id().
+
 import pandas as pd
 import time
 import numpy as np
@@ -7,12 +11,12 @@ import os
 import warnings
 import matplotlib.pyplot as plt
 
-from voxelmon import TLS_PTX,get_files_list,plot_side_view,directory_to_pandas
+from voxelmon import TLS_PTX_Group,get_files_list,plot_side_view,directory_to_pandas
 
 input_folder = r'C:\Users\john1\OneDrive - Northern Arizona University\Work\TontoNF\TLS\PTX\AllScans'
-keyword = '- Med Density 1.ptx'
+center_scan_key = '- Med Density 1.ptx'
 results_summary_name = 'ResultsSummary.csv'
-export_folder = r'D:\DataWork\TontoUpdatedResultsSingle'
+export_folder = r'D:\DataWork\TontoUpdatedResultsMulti'
 process = True
 generate_figures = True
 
@@ -21,45 +25,52 @@ max_grid_height = 30 # Height of grid above coordinate [0,0,0]
 max_occlusion = .8
 cell_size = .1
 min_height = 0.2
-apply_translation = False
-apply_rotation = True
 
 # Define a function to read the plot id from a scan filename
 def get_plot_id(filename):
     return Path(filename).stem.split('-')[0]
 
-files = get_files_list(input_folder, keyword, recursive=False)
+### Setup file processing ###
+# Get center scan for each plot
+files_scan1 = get_files_list(input_folder, center_scan_key)
+# Get list of all scans
+files_all = get_files_list(input_folder, '.ptx')
+# Segment a list of scans for each plot
+files_grouped = []
+for file_scan1 in files_scan1:
+    plot_id = get_plot_id(file_scan1)
+    files_grouped.append([file for file in files_all if plot_id in file])
+
 start_time_all = time.time()
-i=1
+i = 1
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 export_folder = Path(export_folder)
 
 if process:
-    for ptx_file in files:
-        start_time = time.time()
-        print("Starting file ", i, " of ",len(files))
-        plot_id = get_plot_id(ptx_file)
+    for filegroup in files_grouped:
 
-        ptx = TLS_PTX(ptx_file, apply_translation=apply_translation, apply_rotation=apply_rotation, drop_null=False)
-        grid, profile, plot_summary = ptx.execute_default_processing(export_dir=export_folder,
-                                                                     plot_name=plot_id,
-                                                                     cell_size=cell_size,
-                                                                     plot_radius=plot_radius,
-                                                                     max_height=max_grid_height,
-                                                                     max_occlusion=max_occlusion,
-                                                                     sigma1=0,
-                                                                     min_pad_foliage=.01,
-                                                                     max_pad_foliage=6)
+        start_time = time.time()
+        print("Starting file ", i, " of ",len(files_grouped))
+
+        plot_id = get_plot_id(filegroup[0])
+
+        ptx = TLS_PTX_Group(filegroup)
+        grid, profile, plot_summary = ptx.execute_default_processing(export_dir=export_folder, plot_name=plot_id, cell_size=cell_size,
+                                                                     plot_radius=plot_radius, max_height=max_grid_height, max_occlusion=max_occlusion,
+                                                                     sigma1=0, min_pad_foliage=.01, max_pad_foliage=6)
         profile['PLT_CN'] = plot_id
 
-        print("Finished file ", i, " of ", len(files)," in ", round(time.time()-start_time,3)," seconds")
+        print("Finished file ", i, " of ", len(files_grouped)," in ", round(time.time()-start_time,3)," seconds")
         i += 1
 
     print("Finished all files in ",round(time.time()-start_time_all)," seconds")
 
-profiles = directory_to_pandas(Path(export_folder) / 'PAD_Profile', filename_col='PLT_CN')
+profile_paths = directory_to_pandas(Path(export_folder) / 'PAD_Profile', filename_col='PLT_CN')
+profiles = []
+
+profiles = pd.concat(profiles)
 profiles = profiles[profiles['HT']>=.2]
 
 if generate_figures:
