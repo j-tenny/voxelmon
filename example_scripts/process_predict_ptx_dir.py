@@ -189,7 +189,7 @@ def process(input_folder, export_folder, field_summary_path, canopy_model_path,
             #          transform=ax2.transAxes, fontsize=8, ha='left')
             f.tight_layout(pad=2)
             plt.savefig(export_folder.joinpath(plotname + '.png'), dpi=300)
-            plt.show()
+            # plt.show()
             print("Finished figure for ", plotname)
 
     print("Finished figure outputs in ", round(time.time() - start_time), " seconds \n")

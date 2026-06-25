@@ -1580,7 +1580,7 @@ class TLS_PTX:
         self.filter(keep)
 
     def execute_default_processing(self,
-                                   export_dir:str,
+                                   export_folder:str,
                                    plot_name:str,
                                    cell_size:float=.1,
                                    plot_radius:float=11.3,
@@ -1589,23 +1589,47 @@ class TLS_PTX:
                                    max_occlusion:float=.8,
                                    sigma1:float=0,
                                    min_pad_foliage:float=.01,
-                                   max_pad_foliage:float=6)->Tuple['Grid','pd.DataFrame','pd.DataFrame']:
+                                   max_pad_foliage:float=6,
+                                   export_points:bool=False,
+                                   export_dem:bool=True,
+                                   export_pad:bool=True,
+                                   export_profile:bool=True,
+                                   export_summary:bool=True)->Tuple['Grid','pd.DataFrame','pd.DataFrame']:
         """Execute default processing pipeline and write outputs including PAD, DEM, and summaries to export_folder
 
         Args:
             export_dir (str): path to folder where exports will be stored.
                 export_dir and sub dirs will be created automatically.
+
             plot_name (str): unique ID for the plot.
+
             cell_size (float): voxel cell size in meters.
+
             plot_radius (float): radius used to clip data to a circular plot around the sensor.
+
             plot_radius_buffer (float): buffer distance extending from the plot radius to the grid extents.
+
             max_height (float): maximum height above sensor used to set grid height.
+
             max_occlusion (float): threshold value used to classify voxels as occluded. Should be between 0 and 1.
+
             sigma1 (float): sigma value used to apply gaussian smoothing filter to PAD grid. If 0, no filter is applied.
+
             min_pad_foliage (float): threshold for minimum PAD when classifying voxels as foliage. PAD below threshold
                 is considered empty.
+
             max_pad_foliage (float): threshold for maximum PAD when classifying voxels as foliage. PAD above threshold
                 is considered non-foliage.
+
+            export_points (bool): if True, exports a thinned point cloud clipped to plot area in .csv format.
+
+            export_dem (bool): if True, exports a DEM in .csv format with row for each grid cell.
+
+            export_pad (bool): if True, exports a padded grid in .csv format.
+
+            export_profile (bool): if True, exports a PAD profile in .csv format.
+
+            export_summary (bool): if True, exports a summary of scan data in .csv format.
 
         Returns: Grid (Grid), Profile (pd.DataFrame), Summary (pd.DataFrame)
 
@@ -1669,7 +1693,7 @@ class TLS_PTX:
         from voxelmon.utils import _default_postprocessing,_default_folder_setup
         from pathlib import Path
 
-        _default_folder_setup(export_dir,points_dir=True)
+        _default_folder_setup(export_folder,points_dir=export_points,dem_dir=export_dem,pad_grid_dir=export_pad,pad_profile_dir=export_profile,plot_summary_dir=export_summary)
 
         pulses = Pulses.from_point_cloud_array(self.xyz, self.origin)
 
@@ -1689,8 +1713,16 @@ class TLS_PTX:
 
         grid.calculate_pulse_metrics(pulses)
 
-        profile, summary = _default_postprocessing(grid=grid, plot_name=plot_name, export_folder=export_dir, plot_radius=plot_radius, max_occlusion=max_occlusion, sigma1=sigma1, min_pad_foliage=min_pad_foliage, max_pad_foliage=max_pad_foliage)
-        pulses_thin.to_csv(Path(export_dir) / 'Points' / (plot_name + '.csv'))
+        if export_points:
+            Path(export_folder).joinpath('Points').mkdir(exist_ok=True, parents=True)
+            pulses_thin.to_csv(Path(export_folder) / 'Points' / (plot_name + '.csv'))
+
+        profile, summary = _default_postprocessing(grid=grid, plot_name=plot_name, export_folder=export_folder,
+                                                   plot_radius=plot_radius, max_occlusion=max_occlusion, sigma1=sigma1,
+                                                   min_pad_foliage=min_pad_foliage, max_pad_foliage=max_pad_foliage,
+                                                   export_dem=export_dem, export_pad_grid=export_pad,
+                                                   export_pad_profile=export_profile,
+                                                   export_plot_summary=export_summary)
 
         return grid, profile, summary
 
@@ -1719,23 +1751,47 @@ class TLS_PTX_Group:
                                    max_occlusion:float=.8,
                                    sigma1:float=0,
                                    min_pad_foliage:float=.01,
-                                   max_pad_foliage:float=6)->Tuple['Grid','pd.DataFrame','pd.DataFrame']:
+                                   max_pad_foliage:float=6,
+                                   export_points:bool=False,
+                                   export_pad:bool=True,
+                                   export_profile:bool=True,
+                                   export_dem:bool=True,
+                                   export_summary:bool=True)->Tuple['Grid','pd.DataFrame','pd.DataFrame']:
         """Execute default processing pipeline and write outputs including PAD, DEM, and summaries to export_folder
 
         Args:
             export_dir (str): path to folder where exports will be stored.
                 export_dir and sub dirs will be created automatically.
+
             plot_name (str): unique ID for the plot.
+
             cell_size (float): voxel cell size in meters.
+
             plot_radius (float): radius used to clip data to a circular plot around the sensor.
+
             plot_radius_buffer (float): buffer distance extending from the plot radius to the grid extents.
+
             max_height (float): maximum height above sensor used to set grid height.
+
             max_occlusion (float): threshold value used to classify voxels as occluded. Should be between 0 and 1.
+
             sigma1 (float): sigma value used to apply gaussian smoothing filter to PAD grid. If 0, no filter is applied.
+
             min_pad_foliage (float): threshold for minimum PAD when classifying voxels as foliage. PAD below threshold
                 is considered empty.
+
             max_pad_foliage (float): threshold for maximum PAD when classifying voxels as foliage. PAD above threshold
                 is considered non-foliage.
+
+            export_points (bool): if True, exports a thinned point cloud clipped to plot area in .csv format.
+
+            export_dem (bool): if True, exports a DEM in .csv format with row for each grid cell.
+
+            export_pad (bool): if True, exports a padded grid in .csv format.
+
+            export_profile (bool): if True, exports a PAD profile in .csv format.
+
+            export_summary (bool): if True, exports a summary of scan data in .csv format.
 
         Returns: Grid (Grid), Profile (pd.DataFrame), Summary (pd.DataFrame)
 
@@ -1796,8 +1852,9 @@ class TLS_PTX_Group:
         - PLT_CN: user-specified plot_id
         """
         from voxelmon.utils import _default_folder_setup, _default_postprocessing
+        from pathlib import Path
 
-        _default_folder_setup(export_folder)
+        _default_folder_setup(export_folder,points_dir=export_points,dem_dir=export_dem,pad_grid_dir=export_pad,pad_profile_dir=export_profile,plot_summary_dir=export_summary)
 
         maxExtents = [-plot_radius - plot_radius_buffer, -plot_radius - plot_radius_buffer, -plot_radius, plot_radius + plot_radius_buffer, plot_radius + plot_radius_buffer, max_height]
 
@@ -1828,9 +1885,15 @@ class TLS_PTX_Group:
                 grid_temp.calculate_pulse_metrics(pulses)
                 grid.add_pulse_metrics(grid_temp)
 
-        #pulses_thin.to_csv(os.path.join(export_folder, 'Points/', plot_name) + '.csv')
+        if export_points:
+            Path(export_folder).joinpath('Points').mkdir(exist_ok=True, parents=True)
+            pulses_thin.to_csv(Path(export_folder)/'Points'/(plot_name + '.csv'))
 
-        profile, summary = _default_postprocessing(grid=grid, plot_name=plot_name, export_folder=export_folder, plot_radius=plot_radius, max_occlusion=max_occlusion, sigma1=sigma1, min_pad_foliage=min_pad_foliage, max_pad_foliage=max_pad_foliage)
+        profile, summary = _default_postprocessing(grid=grid, plot_name=plot_name, export_folder=export_folder,
+                                                   plot_radius=plot_radius, max_occlusion=max_occlusion, sigma1=sigma1,
+                                                   min_pad_foliage=min_pad_foliage, max_pad_foliage=max_pad_foliage,
+                                                   export_dem=export_dem, export_pad_grid=export_pad, export_pad_profile=export_profile,
+                                                   export_plot_summary=export_summary,)
 
         return grid, profile, summary
 
@@ -2284,11 +2347,6 @@ class BulkDensityProfileModelFitter:
     def summarize_species_profiles(self):
         """
         Summarize species distribution profile for each class
-        Args:
-            profile_data:
-            species_cols:
-            height_col:
-            class_id_col:
 
         Returns: None. Data is written to self.species_profiles.
         """
