@@ -67,7 +67,6 @@ if process:
 
     print("Finished all files in ",round(time.time()-start_time_all)," seconds")
 
-stop
 profile_paths = directory_to_pandas(Path(export_folder) / 'PAD_Profile', filename_col='PLT_CN')
 profiles = []
 
